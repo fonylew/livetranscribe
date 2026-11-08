@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LiveTranscribe — Thai ⇄ English Event Transcription &amp; Translation</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <!-- Compact Persistent Control Bar (Hidden in ?view=display OBS Mode unless hovered) -->
+    <header class="topbar" id="topbar">
+      <div class="topbar-left">
+        <div class="brand">
+          <span class="status-dot disconnected" id="statusDot" title="Disconnected"></span>
+          <span class="brand-title">LiveTranscribe</span>
+          <span class="lang-pair-badge" title="Bidirectional Thai and English">TH ⇄ EN</span>
+        </div>
+
+        <span class="status-text" id="statusText">Idle</span>
+      </div>
+
+      <div class="topbar-center">
+        <!-- Session Start / Stop -->
+        <button type="button" class="btn btn-primary" id="startStopBtn">
+          <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+            <polygon points="6,4 20,12 6,20" fill="currentColor" />
+          </svg>
+          <span id="startStopLabel">Start Session</span>
+        </button>
+
+        <!-- Mic On / Off Toggle (Stops sending stream when off to save tokens/money) -->
+        <button
+          type="button"
+          class="btn btn-mic"
+          id="micToggleBtn"
+          aria-pressed="false"
+          title="Toggle Microphone / Line-In Stream (Shortcut: M). When OFF, stops sending audio stream to save tokens."
+        >
+          <svg class="icon-svg mic-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="9" y="2" width="6" height="11" rx="3" />
+            <path d="M5 11a7 7 0 0 0 14 0" />
+            <path d="M12 18v3" />
+            <path class="slash" d="M3 3l18 18" />
+          </svg>
+          <span id="micToggleLabel">Mic ON</span>
+          <span class="mic-meter" aria-hidden="true">
+            <span class="mic-meter-fill" id="micMeterFill"></span>
+          </span>
+        </button>
+
+        <!-- Stream Gating Status Badge -->
+        <span class="stream-badge idle" id="streamStateBadge">Stream Idle</span>
+
+        <!-- Audio Source / Line-In Picker -->
+        <div class="input-select-group">
+          <select
+            id="audioSourceSelect"
+            class="select-compact"
+            aria-label="Audio Input Source (Mic, Line-In, or Tab Audio)"
+            title="Select Microphone, Audio Interface Line-In (for OBS/Mixer), or Browser Tab Audio"
+          >
+            <option value="">Default Microphone / Line-In</option>
+            <option value="__tab__">🌐 Browser Tab / System Audio...</option>
+          </select>
+          <button
+            type="button"
+            class="btn btn-icon"
+            id="refreshDevicesBtn"
+            title="Refresh Audio Input / Line-In Devices"
+            aria-label="Refresh Audio Input Devices"
+          >
+            <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+              <polyline points="21 3 21 9 15 9" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="topbar-right">
+        <!-- Main Screen Token Counter Pill: Shows ONLY token count & elapsed time (NO price on main screen) -->
+        <button
+          type="button"
+          class="token-pill"
+          id="tokenPillBtn"
+          popovertarget="costPopover"
+          title="Click to view Token Breakdown &amp; API Cost Estimation"
+        >
+          <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 7v5l3 3" />
+          </svg>
+          <span id="elapsedClock">00:00</span>
+          <span class="pill-divider" aria-hidden="true">·</span>
+          <strong id="mainTokenCount">0 tokens</strong>
+        </button>
+
+        <!-- Layout Toggle (Side-by-Side vs Stacked) -->
+        <button
+          type="button"
+          class="btn btn-ghost"
+          id="layoutToggleBtn"
+          title="Switch between Side-by-Side and Stacked transcript view"
+        >
+          <span id="layoutToggleLabel">Side-by-Side</span>
+        </button>
+
+        <!-- Clean OBS / Stage Display Window -->
+        <a
+          href="/?view=display"
+          target="_blank"
+          rel="noopener"
+          class="btn btn-ghost"
+          id="obsViewLink"
+          title="Open clean White Background Display View for OBS Browser Source or Stage Projector"
+        >
+          OBS View ↗
+        </a>
+
+        <!-- Settings & Glossary Popover Trigger -->
+        <button
+          type="button"
+          class="btn btn-ghost"
+          id="settingsBtn"
+          popovertarget="settingsPopover"
+          title="API Key, Line-In Audio Settings, Silence Gate &amp; Glossary"
+        >
+          Settings
+        </button>
+      </div>
+    </header>
+
+    <!-- Notification / Warning Banner -->
+    <div class="banner error" id="errorBanner" hidden>
+      <span id="errorBannerText"></span>
+      <button type="button" class="banner-close" id="closeErrorBtn" aria-label="Dismiss">×</button>
+    </div>
+
+    <div class="banner warn" id="micWarningBanner" hidden>
+      <span id="micWarningText"></span>
+    </div>
+
+    <!-- Token Breakdown & API Cost Estimation Popover (Price is ONLY inside this popover, never on main screen) -->
+    <section id="costPopover" class="popover-card" popover="auto" aria-label="Token &amp; API Cost Estimation">
+      <div class="popover-header">
+        <h2>Token Usage &amp; API Cost Estimation</h2>
+        <button type="button" class="popover-close" popovertarget="costPopover" popovertargetaction="hide" aria-label="Close">×</button>
+      </div>
+      <p class="popover-subtitle">
+        Calculated at Google Gemini Live API rate (25 tokens/sec of active audio).
+        When <strong>Mic OFF</strong> or <strong>Silence Gate</strong> is active, no audio stream is sent (`0 tokens/sec`).
+      </p>
+
+      <div class="metrics-grid">
+        <div class="metric-box">
+          <span class="metric-label">Total Billed Tokens</span>
+          <strong class="metric-value" id="popTotalTokens">0</strong>
+          <span class="metric-sub" id="popTokenSplit">In: 0 · Out: 0</span>
+        </div>
+        <div class="metric-box saved">
+          <span class="metric-label">Tokens Saved (Mic Off / Gate)</span>
+          <strong class="metric-value" id="popSavedTokens">0</strong>
+          <span class="metric-sub" id="popSavedTime">0s stream paused</span>
+        </div>
+        <div class="metric-box">
+          <span class="metric-label">Estimated API Cost (USD)</span>
+          <strong class="metric-value" id="popCostUSD">$0.0000</strong>
+          <span class="metric-sub" id="popHourlyUSD">~$0.000 / hr</span>
+        </div>
+        <div class="metric-box">
+          <span class="metric-label">Estimated API Cost (THB)</span>
+          <strong class="metric-value" id="popCostTHB">฿0.00</strong>
+          <span class="metric-sub" id="popHourlyTHB">~฿0.00 / hr</span>
+        </div>
+      </div>
+
+      <div class="cost-details">
+        <div class="detail-row">
+          <span>Active Model</span>
+          <code id="popModelName">gemini-3.8-live</code>
+        </div>
+        <div class="detail-row">
+          <span>Active Audio Streamed (In / Out)</span>
+          <span id="popActiveAudioTime">0.0s in / 0.0s out</span>
+        </div>
+        <div class="detail-row">
+          <span>Estimated Savings from Stream Pause</span>
+          <span id="popSavedMoney">$0.0000 (฿0.00)</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Settings, Line-In, Silence Gate & Event Glossary Popover -->
+    <section id="settingsPopover" class="popover-card settings-card" popover="auto" aria-label="Settings">
+      <div class="popover-header">
+        <h2>Event &amp; Audio Settings</h2>
+        <button type="button" class="popover-close" popovertarget="settingsPopover" popovertargetaction="hide" aria-label="Close">×</button>
+      </div>
+
+      <div class="form-group">
+        <label for="apiKeyInput">Gemini API Key <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">(Get Key ↗)</a></label>
+        <div class="input-row">
+          <input
+            type="password"
+            id="apiKeyInput"
+            placeholder="AIzaSy..."
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button type="button" class="btn btn-ghost" id="toggleKeyVisBtn">Show</button>
+        </div>
+        <small class="help-text">Stored locally in your browser (`localStorage`) and sent only to `generativelanguage.googleapis.com`.</small>
+      </div>
+
+      <div class="form-row-two">
+        <div class="form-group">
+          <label for="modelSelect">Gemini Live Model</label>
+          <select id="modelSelect">
+            <option value="gemini-3.8-live">gemini-3.8-live (Recommended)</option>
+            <option value="gemini-3.1-flash-live-preview">gemini-3.1-flash-live-preview</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="fontScaleRange">Transcript Font Size (<span id="fontScaleOut">100%</span>)</label>
+          <input type="range" id="fontScaleRange" min="80" max="180" step="5" value="100" />
+        </div>
+      </div>
+
+      <fieldset class="fieldset-box">
+        <legend>Line-In / OBS &amp; Cost-Saving Stream Controls</legend>
+        <label class="checkbox-row">
+          <input type="checkbox" id="lineInModeCheck" />
+          <span>
+            <strong>Line-In / Mixer Direct Mode (OBS &amp; Soundboard)</strong>
+            <small>Disables browser Auto-Gain, Echo Cancellation &amp; Noise Suppression for clean mixer feeds.</small>
+          </span>
+        </label>
+
+        <label class="checkbox-row">
+          <input type="checkbox" id="silenceGateCheck" checked />
+          <span>
+            <strong>Smart Silence Gate (Auto-Pause Stream When Silent)</strong>
+            <small>Stops sending audio frames after 1.5s of silence to save tokens, with a 350ms pre-roll buffer so speech onset is never clipped.</small>
+          </span>
+        </label>
+
+        <label class="checkbox-row">
+          <input type="checkbox" id="ttsAudioCheck" />
+          <span>
+            <strong>Play Spoken Translation Audio (TTS)</strong>
+            <small>Off by default for live event screens/OBS to prevent room echo.</small>
+          </span>
+        </label>
+      </fieldset>
+
+      <div class="form-group">
+        <label for="eventContextInput">Event Topic / Context (Optional)</label>
+        <input
+          type="text"
+          id="eventContextInput"
+          placeholder="e.g., Technology conference keynote on AI and Cloud Infrastructure"
+        />
+      </div>
+
+      <div class="form-group">
+        <label for="glossaryInput">Custom Event Glossary (`Source = Target`, one per line)</label>
+        <textarea
+          id="glossaryInput"
+          rows="4"
+          placeholder="Kubernetes = Kubernetes&#10;กรุงเทพมหานคร = Bangkok&#10;Generative AI = Generative AI"
+        ></textarea>
+      </div>
+
+      <div class="popover-footer">
+        <div class="footer-left">
+          <button type="button" class="btn btn-ghost" id="demoTurnBtn" title="Insert a sample Thai/English turn to preview layout and OBS sync">
+            + Test Sample Turn
+          </button>
+          <button type="button" class="btn btn-ghost" id="clearHistoryBtn">
+            Clear History
+          </button>
+          <button type="button" class="btn btn-ghost" id="exportTranscriptBtn">
+            Export .TXT
+          </button>
+        </div>
+        <button type="button" class="btn btn-primary" popovertarget="settingsPopover" popovertargetaction="hide">
+          Done
+        </button>
+      </div>
+    </section>
+
+    <!-- Main White Canvas: Scrollable History + Pinned Current Live Transcription -->
+    <main class="stage" id="stageContainer">
+      <!-- Scrollable Past Turns (History) -->
+      <section class="history-section" id="historyScroller" aria-label="Transcription History">
+        <div class="section-header">
+          <span class="section-title">History</span>
+          <span class="turn-counter" id="turnCounter">0 turns</span>
+        </div>
+
+        <div class="empty-state" id="emptyState">
+          <p class="empty-headline">Ready for Thai ⇄ English Live Transcription</p>
+          <p class="empty-sub">
+            Select your Microphone, Audio Interface Line-In (for OBS/Mixer), or Tab Audio above and click
+            <strong>Start Session</strong>. Speak in <strong>Thai</strong> to translate to <strong>English</strong>,
+            or speak in <strong>English</strong> to translate to <strong>Thai</strong>.
+          </p>
+        </div>
+
+        <div class="history-list" id="historyList"></div>
+      </section>
+
+      <!-- Floating "Jump to Live" button when scrolled up -->
+      <button type="button" class="jump-live-btn" id="jumpLiveBtn" hidden>
+        ↓ Jump to Current Transcription
+      </button>
+
+      <!-- Pinned Current Live Transcription & Translation -->
+      <section class="current-section" id="currentSection" aria-live="polite" aria-label="Current Live Transcription">
+        <div class="current-header">
+          <div class="current-title-group">
+            <span class="live-pulse" id="livePulse"></span>
+            <span class="section-title" id="currentStatusLabel">Current Transcription</span>
+            <span class="direction-pill" id="currentDirectionPill">TH ⇄ EN</span>
+          </div>
+          <span class="current-hint" id="currentHint">Waiting for speech...</span>
+        </div>
+
+        <div class="bilingual-grid current-grid" id="currentGrid">
+          <div class="transcript-col source-col">
+            <div class="col-label">
+              <span class="lang-tag" id="currentSourceLangTag">SPEAKER</span>
+              <span class="col-subtitle">Original Speech</span>
+            </div>
+            <div class="transcript-text current-text" id="currentInputText" dir="auto"></div>
+          </div>
+
+          <div class="transcript-col target-col">
+            <div class="col-label">
+              <span class="lang-tag translated" id="currentTargetLangTag">TRANSLATION</span>
+              <span class="col-subtitle">Translated Output</span>
+            </div>
+            <div class="transcript-text current-text translated-text" id="currentOutputText" dir="auto"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js?v=3"></script>
+  </body>
+</html>
