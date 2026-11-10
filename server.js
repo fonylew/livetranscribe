@@ -1,17 +1,15 @@
 /**
- * Lightweight zero-dependency HTTP + HTTPS multiplexed server (on a single port!)
- * and WebSocket relay hub.
+ * LiveTranscribe Server (Cloud Run + Local LAN Ready)
  *
- * Why multiplex HTTP and HTTPS on the SAME port (0.0.0.0:3000)?
- * - When accessing the app via a LAN IP (e.g. `http://192.168.10.61:3000`), Chrome/Edge/Safari
- *   block `navigator.mediaDevices.getUserMedia` and `AudioWorklet` on plain `http://`
- *   (`navigator.mediaDevices` is `undefined`).
- * - By sniffing the first byte of each TCP connection on port 3000 (`0x16` = TLS vs plain HTTP),
- *   the server accepts BOTH `http://...:3000` and `https://...:3000` on the same port, and
- *   automatically redirects plain HTTP operator visits on LAN IPs to `https://<host>:3000/`
- *   so `getUserMedia` and `AudioWorklet` always work!
- * - Meanwhile, `http://<host>:3000/?view=display` (OBS Browser Source) continues to work over
- *   both plain HTTP and HTTPS without requiring mic permissions.
+ * Capabilities:
+ * 1. Loads `.env` (`GEMINI_API_KEY`, `GCS_BUCKET`, `FIRESTORE_COLLECTION`, `GCP_PROJECT_ID`).
+ * 2. Isolates multiple concurrent sessions by browser cookie (`lt_token`) and/or `?token=` query param
+ *    so multiple events/operators can use the same Cloud Run deployment simultaneously, and OBS views
+ *    opened in the same browser (via cookie) or OBS Studio Browser Source (via `?token=`) pair automatically.
+ * 3. Persists session transcriptions in SubRip (`.srt`) format locally, in Google Cloud Storage (GCS),
+ *    and in Google Cloud Firestore.
+ * 4. Multiplexes HTTP and HTTPS on a single port (`PORT`, default 3000) for local LAN microphone access
+ *    while supporting Cloud Run's `x-forwarded-proto: https` header.
  */
 
 import net from "node:net";
@@ -24,6 +22,11 @@ import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+import { loadDotEnv } from "./lib/env.js";
+import { sanitizeId, SessionStore } from "./lib/storage.js";
+
+loadDotEnv();
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "public");
 const PORT = Number(process.env.PORT || 3000);
@@ -35,159 +38,393 @@ const MIME_TYPES = {
   ".js": "application/javascript; charset=utf-8",
   ".mjs": "application/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".srt": "text/plain; charset=utf-8",
   ".svg": "image/svg+xml",
   ".png": "image/png",
   ".ico": "image/x-icon",
 };
 
-/** Connected WebSocket clients on `/ws-relay` (shared across HTTP and HTTPS) */
-const clients = new Set();
+function parseCookies(cookieHeader = "") {
+  const out = {};
+  for (const pair of String(cookieHeader).split(";")) {
+    const idx = pair.indexOf("=");
+    if (idx < 1) continue;
+    const k = pair.slice(0, idx).trim();
+    const v = pair.slice(idx + 1).trim();
+    out[k] = decodeURIComponent(v);
+  }
+  return out;
+}
 
-/** Latest snapshot so a newly opened OBS Browser Source catches up immediately */
-let latestSnapshot = null;
+/**
+ * Resolve or mint the browser/channel token (`lt_token`) that links an Operator tab,
+ * its OBS Display View, and its saved `.srt` sessions.
+ */
+function resolveClientToken(req, url) {
+  const fromQuery = url.searchParams.get("token");
+  if (fromQuery && sanitizeId(fromQuery, "")) {
+    return { token: sanitizeId(fromQuery), isNew: true };
+  }
+
+  const fromHeader = req.headers["x-lt-token"];
+  if (fromHeader && sanitizeId(fromHeader, "")) {
+    return { token: sanitizeId(fromHeader), isNew: false };
+  }
+
+  const cookies = parseCookies(req.headers.cookie || "");
+  if (cookies.lt_token && sanitizeId(cookies.lt_token, "")) {
+    return { token: sanitizeId(cookies.lt_token), isNew: false };
+  }
+
+  const generated = `lt_${crypto.randomBytes(8).toString("hex")}`;
+  return { token: generated, isNew: true };
+}
 
 function isLoopbackHost(hostHeader = "") {
   const hostname = String(hostHeader).split(":")[0].toLowerCase();
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
 }
 
-function handleHttpRequest(req, res) {
-  const isEncrypted = Boolean(req.socket?.encrypted);
-  const hostHeader = req.headers.host || `localhost:${PORT}`;
-  const url = new URL(req.url || "/", `${isEncrypted ? "https" : "http"}://${hostHeader}`);
-
-  // If an operator opens plain HTTP on a non-localhost IP (e.g. http://192.168.10.61:3000/),
-  // browsers disable `navigator.mediaDevices.getUserMedia`. Redirect automatically to
-  // `https://<host>:3000/` on the same port so the browser enables Microphone/Line-In access!
-  const isDisplayView = url.searchParams.get("view") === "display" || url.searchParams.get("obs") === "1";
-  if (
-    !isEncrypted &&
-    !isLoopbackHost(hostHeader) &&
-    !isDisplayView &&
-    (url.pathname === "/" || url.pathname === "/index.html")
-  ) {
-    res.writeHead(302, {
-      Location: `https://${hostHeader}${req.url || "/"}`,
-      "Cache-Control": "no-store",
+function readJsonBody(req, maxBytes = 5 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    req.on("data", (chunk) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        reject(new Error("Payload too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
     });
-    res.end();
-    return;
-  }
-
-  if (url.pathname === "/api/health") {
-    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({ ok: true, clients: clients.size, https: isEncrypted }));
-    return;
-  }
-
-  let reqPath = decodeURIComponent(url.pathname);
-  if (reqPath === "/") reqPath = "/index.html";
-
-  const safePath = path.normalize(reqPath).replace(/^(\.\.(\/|\\|$))+/, "");
-  const filePath = path.join(PUBLIC_DIR, safePath);
-
-  if (!filePath.startsWith(PUBLIC_DIR)) {
-    res.writeHead(403);
-    res.end("Forbidden");
-    return;
-  }
-
-  fs.stat(filePath, (err, stat) => {
-    if (err || !stat.isFile()) {
-      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("Not Found");
-      return;
-    }
-
-    const ext = path.extname(filePath).toLowerCase();
-    const contentType = MIME_TYPES[ext] || "application/octet-stream";
-    res.writeHead(200, {
-      "Content-Type": contentType,
-      "Cache-Control": "no-store, no-cache, must-revalidate",
+    req.on("end", () => {
+      try {
+        const raw = Buffer.concat(chunks).toString("utf8");
+        resolve(raw ? JSON.parse(raw) : {});
+      } catch (err) {
+        reject(err);
+      }
     });
-    fs.createReadStream(filePath).pipe(res);
+    req.on("error", reject);
   });
 }
 
-function attachWsRelay(server) {
-  server.on("upgrade", (req, socket) => {
-    const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-    if (url.pathname !== "/ws-relay") {
-      socket.destroy();
+function sendJson(res, status, data, extraHeaders = {}) {
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+    ...extraHeaders,
+  });
+  res.end(JSON.stringify(data));
+}
+
+export function createAppServer({
+  dataDir = path.join(__dirname, "data", "sessions"),
+  fetchImpl = fetch,
+  sessionStore = null,
+  envApiKey: explicitEnvApiKey = undefined,
+} = {}) {
+  const store = sessionStore || new SessionStore({ dataDir, fetchImpl });
+
+  /**
+   * Isolated rooms keyed by `clientToken`:
+   * Map<string, { clients: Set<net.Socket>, latestSnapshot: object | null }>
+   */
+  const rooms = new Map();
+
+  function getRoom(token) {
+    let room = rooms.get(token);
+    if (!room) {
+      room = { clients: new Set(), latestSnapshot: null };
+      rooms.set(token, room);
+    }
+    return room;
+  }
+
+  async function handleHttpRequest(req, res) {
+    const isEncrypted =
+      Boolean(req.socket?.encrypted) ||
+      String(req.headers["x-forwarded-proto"] || "").toLowerCase() === "https";
+    const hostHeader = req.headers.host || `localhost:${PORT}`;
+    const url = new URL(req.url || "/", `${isEncrypted ? "https" : "http"}://${hostHeader}`);
+
+    const { token: clientToken, isNew } = resolveClientToken(req, url);
+    const cookieHeader = isNew
+      ? {
+          "Set-Cookie": `lt_token=${encodeURIComponent(clientToken)}; Path=/; Max-Age=31536000; SameSite=Lax`,
+        }
+      : {};
+
+    // Auto-redirect plain HTTP operator requests on non-loopback LAN IPs to HTTPS
+    const isDisplayView =
+      url.searchParams.get("view") === "display" || url.searchParams.get("obs") === "1";
+    if (
+      !isEncrypted &&
+      !isLoopbackHost(hostHeader) &&
+      !isDisplayView &&
+      (url.pathname === "/" || url.pathname === "/index.html")
+    ) {
+      res.writeHead(302, {
+        Location: `https://${hostHeader}${req.url || "/"}`,
+        "Cache-Control": "no-store",
+        ...cookieHeader,
+      });
+      res.end();
       return;
     }
 
-    const key = req.headers["sec-websocket-key"];
-    if (!key) {
-      socket.destroy();
+    // 1. Health endpoint
+    if (url.pathname === "/api/health") {
+      let totalClients = 0;
+      for (const r of rooms.values()) totalClients += r.clients.size;
+      sendJson(
+        res,
+        200,
+        {
+          ok: true,
+          clients: totalClients,
+          rooms: rooms.size,
+          https: isEncrypted,
+        },
+        cookieHeader
+      );
       return;
     }
 
-    const accept = crypto
-      .createHash("sha1")
-      .update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
-      .digest("base64");
-
-    socket.write(
-      [
-        "HTTP/1.1 101 Switching Protocols",
-        "Upgrade: websocket",
-        "Connection: Upgrade",
-        `Sec-WebSocket-Accept: ${accept}`,
-        "\r\n",
-      ].join("\r\n")
-    );
-
-    socket.setNoDelay(true);
-    clients.add(socket);
-
-    if (latestSnapshot) {
-      sendWsText(socket, JSON.stringify(latestSnapshot));
+    // 2. Runtime Config & .env API key endpoint
+    if (url.pathname === "/api/config" && req.method === "GET") {
+      const envApiKey = (
+        explicitEnvApiKey ??
+        process.env.GEMINI_API_KEY ??
+        process.env.GOOGLE_API_KEY ??
+        ""
+      ).trim();
+      sendJson(
+        res,
+        200,
+        {
+          ok: true,
+          clientToken,
+          hasEnvApiKey: Boolean(envApiKey),
+          envApiKey,
+          storage: {
+            local: true,
+            gcs: Boolean(store.gcsBucket),
+            gcsBucket: store.gcsBucket || null,
+            firestore: Boolean(store.firestoreEnabled),
+            firestoreEnabled: store.firestoreEnabled,
+            firestoreCollection: store.firestoreCollection,
+          },
+        },
+        cookieHeader
+      );
+      return;
     }
 
-    let buffer = Buffer.alloc(0);
+    // 3. List or Save Sessions (`/api/sessions`)
+    if (url.pathname === "/api/sessions") {
+      if (req.method === "GET") {
+        const sessions = await store.listSessions(clientToken);
+        sendJson(res, 200, { ok: true, clientToken, sessions }, cookieHeader);
+        return;
+      }
 
-    socket.on("data", (chunk) => {
-      buffer = Buffer.concat([buffer, chunk]);
-      while (buffer.length >= 2) {
-        const frame = decodeWsFrame(buffer);
-        if (!frame) break;
-        buffer = buffer.subarray(frame.totalLength);
+      if (req.method === "POST") {
+        try {
+          const body = await readJsonBody(req);
+          const saved = await store.saveSession(clientToken, body, {
+            syncCloud: body.syncCloud !== false,
+          });
+          sendJson(res, 200, { ok: true, session: saved }, cookieHeader);
+        } catch (err) {
+          sendJson(
+            res,
+            400,
+            { ok: false, error: err?.message || "Invalid session data" },
+            cookieHeader
+          );
+        }
+        return;
+      }
+    }
 
-        if (frame.opcode === 0x8) {
-          clients.delete(socket);
-          socket.end();
-          return;
-        }
-        if (frame.opcode === 0x9) {
-          sendWsFrame(socket, 0x0a, frame.payload);
-          continue;
-        }
-        if (frame.opcode === 0x1) {
-          const text = frame.payload.toString("utf8");
-          try {
-            const parsed = JSON.parse(text);
-            if (parsed.type === "snapshot") {
-              latestSnapshot = parsed;
-            }
-          } catch {
-            // Ignore malformed JSON
+    // 4. Get Single Session or Download `.srt` (`/api/sessions/:sessionId[/srt]`)
+    const sessionMatch = url.pathname.match(/^\/api\/sessions\/([a-zA-Z0-9_-]+)(\/srt)?$/);
+    if (sessionMatch && req.method === "GET") {
+      const sessionId = sessionMatch[1];
+      const isSrtDownload = Boolean(sessionMatch[2]);
+      const session = await store.getSession(clientToken, sessionId);
+      if (!session) {
+        sendJson(res, 404, { ok: false, error: "Session not found" }, cookieHeader);
+        return;
+      }
+
+      if (isSrtDownload) {
+        const lang = url.searchParams.get("lang") || "combined";
+        const content =
+          lang === "th"
+            ? session.srtThai
+            : lang === "en"
+              ? session.srtEnglish
+              : session.srtCombined;
+        const suffix = lang === "th" ? ".th.srt" : lang === "en" ? ".en.srt" : ".srt";
+        res.writeHead(200, {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Content-Disposition": `attachment; filename="${session.sessionId}${suffix}"`,
+          "Cache-Control": "no-store",
+          ...cookieHeader,
+        });
+        res.end(content || "");
+        return;
+      }
+
+      sendJson(res, 200, { ok: true, session }, cookieHeader);
+      return;
+    }
+
+    // 5. Static Files
+    let reqPath = decodeURIComponent(url.pathname);
+    if (reqPath === "/") reqPath = "/index.html";
+
+    const safePath = path.normalize(reqPath).replace(/^(\.\.(\/|\\|$))+/, "");
+    const filePath = path.join(PUBLIC_DIR, safePath);
+
+    if (!filePath.startsWith(PUBLIC_DIR)) {
+      res.writeHead(403);
+      res.end("Forbidden");
+      return;
+    }
+
+    fs.stat(filePath, (err, stat) => {
+      if (err || !stat.isFile()) {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Not Found");
+        return;
+      }
+
+      const ext = path.extname(filePath).toLowerCase();
+      const contentType = MIME_TYPES[ext] || "application/octet-stream";
+      res.writeHead(200, {
+        "Content-Type": contentType,
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        ...cookieHeader,
+      });
+      fs.createReadStream(filePath).pipe(res);
+    });
+  }
+
+  function attachWsRelay(server) {
+    server.on("upgrade", (req, socket) => {
+      const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+      if (url.pathname !== "/ws-relay") {
+        socket.destroy();
+        return;
+      }
+
+      const key = req.headers["sec-websocket-key"];
+      if (!key) {
+        socket.destroy();
+        return;
+      }
+
+      const { token: clientToken } = resolveClientToken(req, url);
+      const room = getRoom(clientToken);
+
+      const accept = crypto
+        .createHash("sha1")
+        .update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+        .digest("base64");
+
+      socket.write(
+        [
+          "HTTP/1.1 101 Switching Protocols",
+          "Upgrade: websocket",
+          "Connection: Upgrade",
+          `Sec-WebSocket-Accept: ${accept}`,
+          "\r\n",
+        ].join("\r\n")
+      );
+
+      socket.setNoDelay(true);
+      room.clients.add(socket);
+
+      // Immediately send the room's latest snapshot to a newly opened OBS view
+      if (room.latestSnapshot) {
+        sendWsText(socket, JSON.stringify(room.latestSnapshot));
+      }
+
+      let buffer = Buffer.alloc(0);
+
+      socket.on("data", (chunk) => {
+        buffer = Buffer.concat([buffer, chunk]);
+        while (buffer.length >= 2) {
+          const frame = decodeWsFrame(buffer);
+          if (!frame) break;
+          buffer = buffer.subarray(frame.totalLength);
+
+          if (frame.opcode === 0x8) {
+            room.clients.delete(socket);
+            socket.end();
+            return;
           }
-          for (const peer of clients) {
-            if (peer !== socket && !peer.destroyed) {
-              sendWsText(peer, text);
+          if (frame.opcode === 0x9) {
+            sendWsFrame(socket, 0x0a, frame.payload);
+            continue;
+          }
+          if (frame.opcode === 0x1) {
+            const text = frame.payload.toString("utf8");
+            try {
+              const parsed = JSON.parse(text);
+              if (parsed.type === "snapshot") {
+                room.latestSnapshot = parsed;
+              }
+            } catch {
+              // Ignore malformed JSON
+            }
+            for (const peer of room.clients) {
+              if (peer !== socket && !peer.destroyed) {
+                sendWsText(peer, text);
+              }
             }
           }
         }
+      });
+
+      const cleanup = () => {
+        room.clients.delete(socket);
+      };
+      socket.on("close", cleanup);
+      socket.on("error", cleanup);
+    });
+  }
+
+  const httpServer = http.createServer(handleHttpRequest);
+  attachWsRelay(httpServer);
+
+  const creds = getOrCreateTlsCredentials();
+  if (!creds) {
+    return httpServer;
+  }
+
+  const httpsServer = https.createServer(creds, handleHttpRequest);
+  attachWsRelay(httpsServer);
+
+  const muxServer = net.createServer((socket) => {
+    socket.once("readable", () => {
+      const chunk = socket.read(1);
+      if (!chunk) return;
+      socket.unshift(chunk);
+      if (chunk[0] === 0x16) {
+        httpsServer.emit("connection", socket);
+      } else {
+        httpServer.emit("connection", socket);
       }
     });
-
-    const cleanup = () => {
-      clients.delete(socket);
-    };
-    socket.on("close", cleanup);
-    socket.on("error", cleanup);
+    socket.on("error", () => {});
   });
+
+  return muxServer;
 }
 
 function getOrCreateTlsCredentials() {
@@ -198,7 +435,6 @@ function getOrCreateTlsCredentials() {
   try {
     fs.mkdirSync(certDir, { recursive: true });
     if (!fs.existsSync(keyPath) || !fs.existsSync(certPath)) {
-      // Collect local IPv4 addresses for Subject Alternative Name (SAN)
       const nets = os.networkInterfaces();
       const sanEntries = ["DNS:localhost", "IP:127.0.0.1", "IP:0.0.0.0"];
       for (const iface of Object.values(nets)) {
@@ -237,39 +473,6 @@ function getOrCreateTlsCredentials() {
   } catch {
     return null;
   }
-}
-
-/**
- * Create a single server that accepts BOTH HTTP and HTTPS connections on the same port.
- */
-export function createAppServer() {
-  const httpServer = http.createServer(handleHttpRequest);
-  attachWsRelay(httpServer);
-
-  const creds = getOrCreateTlsCredentials();
-  if (!creds) {
-    return httpServer;
-  }
-
-  const httpsServer = https.createServer(creds, handleHttpRequest);
-  attachWsRelay(httpsServer);
-
-  const muxServer = net.createServer((socket) => {
-    socket.once("readable", () => {
-      const chunk = socket.read(1);
-      if (!chunk) return;
-      socket.unshift(chunk);
-      // 0x16 is the TLS handshake record content type
-      if (chunk[0] === 0x16) {
-        httpsServer.emit("connection", socket);
-      } else {
-        httpServer.emit("connection", socket);
-      }
-    });
-    socket.on("error", () => {});
-  });
-
-  return muxServer;
 }
 
 function decodeWsFrame(buf) {
@@ -337,9 +540,8 @@ function sendWsFrame(socket, opcode, payload) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const server = createAppServer();
   server.listen(PORT, HOST, () => {
-    console.log(`LiveTranscribe (HTTP + HTTPS multiplexed) listening on ${HOST}:${PORT}`);
+    console.log(`LiveTranscribe listening on ${HOST}:${PORT}`);
     console.log(`  Local Operator View:  http://localhost:${PORT}/`);
-    console.log(`  LAN Operator View:    https://192.168.10.61:${PORT}/  (http:// auto-redirects to https://)`);
     console.log(`  OBS Browser Source:   http://localhost:${PORT}/?view=display`);
   });
 }

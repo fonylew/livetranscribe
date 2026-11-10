@@ -7,6 +7,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
+    "deploy:local": "./deploy.sh --local",
+    "deploy:cloud": "./deploy.sh --cloud",
+    "deploy:github": "./deploy.sh --github",
     "test": "node --test tests/*.test.js"
   },
   "engines": {

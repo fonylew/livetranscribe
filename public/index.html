@@ -10,10 +10,10 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=4" />
   </head>
   <body>
-    <!-- Compact Persistent Control Bar (Hidden in ?view=display OBS Mode unless hovered) -->
+    <!-- Compact Persistent Control Bar (Hidden in ?view=display OBS Mode) -->
     <header class="topbar" id="topbar">
       <div class="topbar-left">
         <div class="brand">
@@ -101,24 +101,25 @@
           <strong id="mainTokenCount">0 tokens</strong>
         </button>
 
-        <!-- Layout Toggle (Side-by-Side vs Stacked) -->
+        <!-- Past Sessions & SRT Files Popover Trigger -->
         <button
           type="button"
           class="btn btn-ghost"
-          id="layoutToggleBtn"
-          title="Switch between Side-by-Side and Stacked transcript view"
+          id="sessionsBtn"
+          popovertarget="sessionsPopover"
+          title="View Past Sessions &amp; Download .SRT Subtitle Files"
         >
-          <span id="layoutToggleLabel">Side-by-Side</span>
+          Past Sessions (.SRT)
         </button>
 
-        <!-- Clean OBS / Stage Display Window -->
+        <!-- Clean OBS / Stage Display Window (Paired via Cookie + Session Token) -->
         <a
           href="/?view=display"
           target="_blank"
           rel="noopener"
           class="btn btn-ghost"
           id="obsViewLink"
-          title="Open clean White Background Display View for OBS Browser Source or Stage Projector"
+          title="Open Compact OBS View (Supports Vertical Side History &amp; Horizontal Subtitle Layouts)"
         >
           OBS View ↗
         </a>
@@ -129,14 +130,14 @@
           class="btn btn-ghost"
           id="settingsBtn"
           popovertarget="settingsPopover"
-          title="API Key, Line-In Audio Settings, Silence Gate &amp; Glossary"
+          title="API Key, OBS Layout Mode, Line-In Audio Settings &amp; Glossary"
         >
           Settings
         </button>
       </div>
     </header>
 
-    <!-- Notification / Warning Banner -->
+    <!-- Notification / Warning Banners -->
     <div class="banner error" id="errorBanner" hidden>
       <span id="errorBannerText"></span>
       <button type="button" class="banner-close" id="closeErrorBtn" aria-label="Dismiss">×</button>
@@ -196,39 +197,95 @@
       </div>
     </section>
 
-    <!-- Settings, Line-In, Silence Gate & Event Glossary Popover -->
+    <!-- Past Sessions & SRT Viewer Popover -->
+    <section id="sessionsPopover" class="popover-card sessions-card" popover="auto" aria-label="Past Sessions &amp; SRT Files">
+      <div class="popover-header">
+        <div>
+          <h2>Past Sessions &amp; .SRT Files</h2>
+          <small class="help-text" id="sessionStorageInfo">Saved locally in SRT format (Firestore &amp; GCS synced when configured in .env)</small>
+        </div>
+        <button type="button" class="popover-close" popovertarget="sessionsPopover" popovertargetaction="hide" aria-label="Close">×</button>
+      </div>
+
+      <div class="sessions-layout">
+        <div class="sessions-list-pane">
+          <div class="pane-header">
+            <span>Your Browser Sessions</span>
+            <button type="button" class="btn btn-ghost btn-xs" id="refreshSessionsBtn">Refresh</button>
+          </div>
+          <div class="sessions-list" id="sessionsList">
+            <p class="empty-sessions">No saved sessions yet.</p>
+          </div>
+        </div>
+
+        <div class="session-detail-pane" id="sessionDetailPane">
+          <div class="pane-header">
+            <strong id="selectedSessionTitle">Select a session</strong>
+            <div class="srt-tab-group">
+              <button type="button" class="btn btn-xs srt-tab active" data-srt-mode="combined">Combined .SRT</button>
+              <button type="button" class="btn btn-xs srt-tab" data-srt-mode="th">Thai .SRT</button>
+              <button type="button" class="btn btn-xs srt-tab" data-srt-mode="en">English .SRT</button>
+            </div>
+          </div>
+
+          <pre class="srt-preview" id="srtPreviewBox">Select a session on the left to view or download its .SRT subtitle file.</pre>
+
+          <div class="srt-actions" id="srtActionsBar" hidden>
+            <a href="#" class="btn btn-primary btn-xs" id="downloadSrtCombinedBtn" download>Download Combined .SRT</a>
+            <a href="#" class="btn btn-ghost btn-xs" id="downloadSrtThBtn" download>Download Thai .SRT</a>
+            <a href="#" class="btn btn-ghost btn-xs" id="downloadSrtEnBtn" download>Download English .SRT</a>
+            <button type="button" class="btn btn-ghost btn-xs" id="loadSessionToStageBtn">Load into Main Screen</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Settings, OBS Layout, Line-In, Silence Gate & Event Glossary Popover -->
     <section id="settingsPopover" class="popover-card settings-card" popover="auto" aria-label="Settings">
       <div class="popover-header">
-        <h2>Event &amp; Audio Settings</h2>
+        <h2>Event, OBS &amp; Audio Settings</h2>
         <button type="button" class="popover-close" popovertarget="settingsPopover" popovertargetaction="hide" aria-label="Close">×</button>
       </div>
 
       <div class="form-group">
-        <label for="apiKeyInput">Gemini API Key <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">(Get Key ↗)</a></label>
+        <label for="apiKeyInput">
+          Gemini API Key
+          <span class="env-key-badge" id="envKeyBadge" hidden>✓ Loaded from server .env</span>
+          <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">(Get Key ↗)</a>
+        </label>
         <div class="input-row">
           <input
             type="password"
             id="apiKeyInput"
-            placeholder="AIzaSy..."
+            placeholder="AIzaSy... (or leave blank if set in .env)"
             autocomplete="off"
             spellcheck="false"
           />
           <button type="button" class="btn btn-ghost" id="toggleKeyVisBtn">Show</button>
         </div>
-        <small class="help-text">Stored locally in your browser (`localStorage`) and sent only to `generativelanguage.googleapis.com`.</small>
+        <small class="help-text">Supports `.env` (`GEMINI_API_KEY`) on Cloud Run or a browser-stored override key.</small>
       </div>
 
       <div class="form-row-two">
         <div class="form-group">
-          <label for="modelSelect">Gemini Live Model</label>
-          <select id="modelSelect">
-            <option value="gemini-3.8-live">gemini-3.8-live (Recommended)</option>
-            <option value="gemini-3.1-flash-live-preview">gemini-3.1-flash-live-preview</option>
+          <label for="obsModeSelect">OBS View Layout (`?view=display`)</label>
+          <select id="obsModeSelect">
+            <option value="auto">Auto (By OBS Window Aspect Ratio)</option>
+            <option value="horizontal">Horizontal Subtitle (Latest 2–3 Lines)</option>
+            <option value="vertical">Vertical Side Panel (More History, Latest Bold)</option>
           </select>
         </div>
         <div class="form-group">
           <label for="fontScaleRange">Transcript Font Size (<span id="fontScaleOut">100%</span>)</label>
           <input type="range" id="fontScaleRange" min="80" max="180" step="5" value="100" />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="obsUrlCopyInput">OBS Browser Source URL (Paired to your browser session token)</label>
+        <div class="input-row">
+          <input type="text" id="obsUrlCopyInput" readonly />
+          <button type="button" class="btn btn-ghost" id="copyObsUrlBtn">Copy URL</button>
         </div>
       </div>
 
@@ -246,7 +303,7 @@
           <input type="checkbox" id="silenceGateCheck" checked />
           <span>
             <strong>Smart Silence Gate (Auto-Pause Stream When Silent)</strong>
-            <small>Stops sending audio frames after 1.5s of silence to save tokens, with a 350ms pre-roll buffer so speech onset is never clipped.</small>
+            <small>Stops sending audio frames after 1.5s of silence to save tokens, with a 350ms pre-roll buffer.</small>
           </span>
         </label>
 
@@ -259,21 +316,30 @@
         </label>
       </fieldset>
 
-      <div class="form-group">
-        <label for="eventContextInput">Event Topic / Context (Optional)</label>
-        <input
-          type="text"
-          id="eventContextInput"
-          placeholder="e.g., Technology conference keynote on AI and Cloud Infrastructure"
-        />
+      <div class="form-row-two">
+        <div class="form-group">
+          <label for="modelSelect">Gemini Live Model</label>
+          <select id="modelSelect">
+            <option value="gemini-3.8-live">gemini-3.8-live (Recommended)</option>
+            <option value="gemini-3.1-flash-live-preview">gemini-3.1-flash-live-preview</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="eventContextInput">Event Topic / Context (Optional)</label>
+          <input
+            type="text"
+            id="eventContextInput"
+            placeholder="e.g., Cloud &amp; AI Summit Bangkok"
+          />
+        </div>
       </div>
 
       <div class="form-group">
         <label for="glossaryInput">Custom Event Glossary (`Source = Target`, one per line)</label>
         <textarea
           id="glossaryInput"
-          rows="4"
-          placeholder="Kubernetes = Kubernetes&#10;กรุงเทพมหานคร = Bangkok&#10;Generative AI = Generative AI"
+          rows="3"
+          placeholder="Kubernetes = Kubernetes&#10;กรุงเทพมหานคร = Bangkok"
         ></textarea>
       </div>
 
@@ -283,10 +349,10 @@
             + Test Sample Turn
           </button>
           <button type="button" class="btn btn-ghost" id="clearHistoryBtn">
-            Clear History
+            Clear Screen
           </button>
-          <button type="button" class="btn btn-ghost" id="exportTranscriptBtn">
-            Export .TXT
+          <button type="button" class="btn btn-ghost" id="exportSrtBtn">
+            Download Current .SRT
           </button>
         </div>
         <button type="button" class="btn btn-primary" popovertarget="settingsPopover" popovertargetaction="hide">
@@ -295,13 +361,24 @@
       </div>
     </section>
 
-    <!-- Main White Canvas: Scrollable History + Pinned Current Live Transcription -->
+    <!-- ======================================================================
+         1. OPERATOR STAGE (Main Browser Screen: History + Current Transcription)
+         ====================================================================== -->
     <main class="stage" id="stageContainer">
-      <!-- Scrollable Past Turns (History) -->
       <section class="history-section" id="historyScroller" aria-label="Transcription History">
         <div class="section-header">
           <span class="section-title">History</span>
-          <span class="turn-counter" id="turnCounter">0 turns</span>
+          <div class="section-header-right">
+            <button
+              type="button"
+              class="btn btn-ghost btn-xs"
+              id="layoutToggleBtn"
+              title="Switch between Side-by-Side and Stacked transcript view"
+            >
+              <span id="layoutToggleLabel">Side-by-Side</span>
+            </button>
+            <span class="turn-counter" id="turnCounter">0 turns</span>
+          </div>
         </div>
 
         <div class="empty-state" id="emptyState">
@@ -316,12 +393,10 @@
         <div class="history-list" id="historyList"></div>
       </section>
 
-      <!-- Floating "Jump to Live" button when scrolled up -->
       <button type="button" class="jump-live-btn" id="jumpLiveBtn" hidden>
         ↓ Jump to Current Transcription
       </button>
 
-      <!-- Pinned Current Live Transcription & Translation -->
       <section class="current-section" id="currentSection" aria-live="polite" aria-label="Current Live Transcription">
         <div class="current-header">
           <div class="current-title-group">
@@ -352,6 +427,32 @@
       </section>
     </main>
 
-    <script type="module" src="/app.js?v=3"></script>
+    <!-- ======================================================================
+         2. COMPACT OBS VIEW (`?view=display`):
+            Supports Vertical (side panel history) & Horizontal (subtitle lines)
+            Format:
+              Thai
+              (ts.) ...
+              (ts.) **[latest in bold]**
+              ----------
+              English
+              (ts.) ...
+              (ts.) **[latest in bold]**
+         ====================================================================== -->
+    <main class="obs-stage" id="obsStage" aria-live="polite">
+      <section class="obs-lang-block" id="obsThaiBlock">
+        <div class="obs-lang-header">Thai</div>
+        <div class="obs-lines" id="obsThaiList"></div>
+      </section>
+
+      <div class="obs-divider" aria-hidden="true">----------</div>
+
+      <section class="obs-lang-block" id="obsEnglishBlock">
+        <div class="obs-lang-header">English</div>
+        <div class="obs-lines" id="obsEnglishList"></div>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js?v=4"></script>
   </body>
 </html>

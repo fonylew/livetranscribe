@@ -858,24 +858,288 @@ body.layout-stacked .target-col {
 
 /* ==========================================================================
    Clean OBS / Stage Display Mode (`?view=display`)
+   Compact & Simple: Supports Vertical (side history) & Horizontal (subtitle)
    ========================================================================== */
 
+.obs-stage {
+  display: none;
+}
+
 body.display-mode .topbar,
-body.display-mode .banner {
+body.display-mode .banner,
+body.display-mode #stageContainer {
   display: none !important;
 }
 
 body.display-mode {
-  --transcript-scale: 1.25;
+  --transcript-scale: 1.15;
   background: #ffffff;
 }
 
-body.display-mode .history-section {
-  padding: 1.5rem 2.5rem;
+body.display-mode .obs-stage {
+  display: flex !important;
+  flex-direction: column;
+  justify-content: flex-start;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  padding: 0.9rem 1.25rem;
+  background: var(--bg-white);
+  color: var(--text-primary);
+  overflow-y: auto;
+  gap: 0.45rem;
 }
 
-body.display-mode .current-section {
-  padding: 1.4rem 2.5rem 1.8rem;
+body.display-mode .obs-stage.obs-horizontal {
+  justify-content: center;
+  padding: 0.65rem 1.25rem;
+  gap: 0.3rem;
+}
+
+body.display-mode .obs-stage.obs-vertical {
+  justify-content: flex-start;
+  padding: 1rem 1.15rem;
+  gap: 0.55rem;
+}
+
+.obs-lang-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.22rem;
+  min-width: 0;
+}
+
+.obs-lang-header {
+  font-size: calc(0.78rem * var(--transcript-scale));
+  font-weight: 700;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+}
+
+.obs-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 0.22rem;
+}
+
+.obs-line {
+  font-size: calc(1.04rem * var(--transcript-scale));
+  line-height: 1.45;
+  color: var(--text-secondary);
+  font-weight: 400;
+  word-break: break-word;
+}
+
+.obs-line.latest {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.obs-ts {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  margin-right: 0.35rem;
+  font-size: 0.88em;
+}
+
+.obs-line.latest .obs-ts {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.obs-empty {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.obs-divider {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: calc(0.85rem * var(--transcript-scale));
+  color: var(--border-strong);
+  line-height: 1;
+  padding: 0.1rem 0;
+  user-select: none;
+}
+
+/* ==========================================================================
+   Past Sessions & .SRT Viewer Modal + .env Badge
+   ========================================================================== */
+
+.btn-xs {
+  padding: 0.25rem 0.55rem;
+  font-size: 0.75rem;
+}
+
+.env-key-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.1rem 0.45rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  border-radius: 999px;
+  background: var(--accent-teal-bg);
+  color: var(--accent-teal);
+  border: 1px solid var(--accent-teal-border);
+}
+
+.sessions-card {
+  width: min(56rem, calc(100vw - 2rem));
+}
+
+.sessions-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.storage-badges {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.storage-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.16rem 0.5rem;
+  border-radius: 999px;
+  background: var(--bg-muted);
+  color: var(--text-muted);
+  border: 1px solid var(--border-light);
+}
+
+.storage-badge.active {
+  background: var(--accent-teal-bg);
+  color: var(--accent-teal);
+  border-color: var(--accent-teal-border);
+}
+
+.sessions-layout {
+  display: grid;
+  grid-template-columns: 17rem 1fr;
+  gap: 0.9rem;
+  min-height: 20rem;
+  max-height: 58vh;
+}
+
+.sessions-list-pane {
+  border: 1px solid var(--border-light);
+  border-radius: 0.55rem;
+  background: var(--bg-subtle);
+  overflow-y: auto;
+  padding: 0.45rem;
+}
+
+.sessions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.session-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: 0.45rem;
+  border: 1px solid transparent;
+  background: var(--bg-white);
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.session-item:hover {
+  border-color: var(--border-strong);
+}
+
+.session-item.active {
+  border-color: var(--accent-blue);
+  background: var(--accent-blue-bg);
+}
+
+.session-item-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+}
+
+.session-item-meta {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.session-detail-pane {
+  border: 1px solid var(--border-light);
+  border-radius: 0.55rem;
+  background: var(--bg-white);
+  padding: 0.75rem 0.9rem;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.session-detail-empty {
+  margin: auto;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+.session-detail-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  height: 100%;
+  overflow: hidden;
+}
+
+.session-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.session-detail-meta {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  margin-left: 0.5rem;
+}
+
+.srt-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.srt-preview {
+  flex: 1;
+  margin: 0;
+  padding: 0.65rem 0.75rem;
+  border-radius: 0.45rem;
+  border: 1px solid var(--border-light);
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 @keyframes pulseDot {
@@ -905,5 +1169,8 @@ body.display-mode .current-section {
   .current-section {
     padding-left: 1rem;
     padding-right: 1rem;
+  }
+  .sessions-layout {
+    grid-template-columns: 1fr;
   }
 }

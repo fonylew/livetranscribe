@@ -17,6 +17,7 @@ import {
   UPLINK_RATE,
 } from "./lib/live-session.js";
 import { SessionLoop } from "./lib/session-loop.js";
+import { extractThaiAndEnglish, turnsToSrt } from "./lib/srt.js";
 import {
   computeUsageMetrics,
   DEFAULT_MODEL,
@@ -32,6 +33,7 @@ import {
 } from "./lib/usage.js";
 
 const STORAGE_KEY = "livetranscribe_settings_v1";
+const LOCAL_SESSIONS_KEY = "livetranscribe_sessions_v1";
 const HISTORY_LIMIT = 300;
 
 /** Noise floor & Smart Silence Gate constants */
@@ -45,6 +47,7 @@ const DEFAULT_SETTINGS = {
   model: DEFAULT_MODEL,
   fontScale: 100,
   layoutMode: "side-by-side", // "side-by-side" | "stacked"
+  obsMode: "auto", // "auto" | "horizontal" | "vertical"
   lineInMode: false,
   silenceGate: true,
   ttsAudio: false,
@@ -55,6 +58,8 @@ const DEFAULT_SETTINGS = {
 
 const params = new URLSearchParams(window.location.search);
 const isDisplayMode = params.get("view") === "display" || params.get("obs") === "1";
+const urlToken = (params.get("token") || "").trim();
+const urlObsLayout = (params.get("obsLayout") || params.get("layout") || "").trim();
 
 const state = {
   settings: loadSettings(),
@@ -64,6 +69,18 @@ const state = {
   activeModel: DEFAULT_MODEL,
   status: "disconnected",
   statusDetail: "Idle",
+
+  // Server & Multi-session identity
+  clientToken: urlToken || "",
+  serverEnvApiKey: "",
+  hasEnvApiKey: false,
+  storageInfo: { local: true, gcs: false, firestore: false },
+
+  // Current recording session tracking for .SRT persistence
+  sessionId: "",
+  sessionStartEpochMs: 0,
+  pastSessions: [],
+  selectedPastSession: null,
 
   // Audio contexts & nodes
   ctxUp: null,
@@ -95,12 +112,13 @@ const state = {
     sourceLang: "auto",
     targetLang: "auto",
     startedAt: null,
+    epochMs: null,
   },
   turnIdleTimer: null,
   userScrolledUp: false,
 
   // Cross-window / OBS sync channels
-  bc: typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("livetranscribe_sync") : null,
+  bc: null,
   relayWs: null,
 };
 
@@ -125,7 +143,13 @@ function saveSettings(patch = {}) {
   }
 }
 
-function init() {
+function createNewSessionId() {
+  const iso = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const rand = Math.random().toString(36).slice(2, 6);
+  return `session-${iso}-${rand}`;
+}
+
+async function init() {
   // If opened at http://0.0.0.0:3000 locally, redirect to http://localhost:3000
   // because browsers treat 0.0.0.0 as an insecure origin (disabling AudioWorklet & getUserMedia),
   // whereas http://localhost is a Secure Context.
@@ -146,17 +170,124 @@ function init() {
 
   applyVisualSettings();
   bindUI();
+
+  await loadServerConfig();
   setupSyncChannels();
 
   if (!isDisplayMode) {
     populateAudioDevices();
     navigator.mediaDevices?.addEventListener?.("devicechange", () => populateAudioDevices());
+    refreshPastSessionsList();
   }
+
+  window.addEventListener("resize", () => {
+    if (isDisplayMode) {
+      renderObsStage();
+    }
+  });
 
   renderControlState();
   renderUsageMetrics();
   renderCurrentTurn();
   renderHistory();
+  renderObsStage();
+}
+
+/**
+ * Load server config (`/api/config`):
+ * - Obtains or verifies `clientToken` (also set via `lt_token` cookie for same-browser OBS sync)
+ * - Loads `GEMINI_API_KEY` from `.env` / Cloud Run environment if configured
+ * - Reads active storage targets (Local `.SRT`, Google Cloud Storage, Firestore)
+ */
+async function loadServerConfig() {
+  try {
+    const query = state.clientToken ? `?token=${encodeURIComponent(state.clientToken)}` : "";
+    const res = await fetch(`/api/config${query}`, { credentials: "same-origin" });
+    if (!res.ok) return;
+    const cfg = await res.json();
+
+    if (cfg.clientToken) {
+      state.clientToken = cfg.clientToken;
+    }
+    state.hasEnvApiKey = Boolean(cfg.hasEnvApiKey);
+    state.serverEnvApiKey = cfg.envApiKey || "";
+    if (cfg.storage) {
+      state.storageInfo = cfg.storage;
+    }
+
+    updateEnvApiKeyUI();
+    updateObsPairingLinks();
+    updateStorageBadgesUI();
+  } catch {
+    // Running without server backend
+    updateObsPairingLinks();
+  }
+}
+
+function updateEnvApiKeyUI() {
+  const badge = el("envKeyBadge");
+  const help = el("apiKeyHelpText");
+  const input = el("apiKeyInput");
+
+  if (state.hasEnvApiKey) {
+    if (badge) badge.hidden = false;
+    if (input && !state.settings.apiKey) {
+      input.placeholder = "Using GEMINI_API_KEY from server .env (or enter key to override)";
+    }
+    if (help) {
+      help.textContent =
+        "Server .env GEMINI_API_KEY is active. Leave blank to use the server key, or enter a custom key to override.";
+    }
+  } else {
+    if (badge) badge.hidden = true;
+  }
+}
+
+function updateObsPairingLinks() {
+  const tokenParam = state.clientToken ? `&token=${encodeURIComponent(state.clientToken)}` : "";
+  const basePath = window.location.pathname || "/";
+  const obsPath = `${basePath}?view=display${tokenParam}`;
+  const obsFullUrl = `${window.location.origin}${obsPath}`;
+
+  const link = el("obsViewLink");
+  if (link) {
+    link.href = obsPath;
+  }
+  const copyInput = el("obsUrlCopyInput");
+  if (copyInput) {
+    copyInput.value = obsFullUrl;
+  }
+}
+
+function updateStorageBadgesUI() {
+  const gcsBadge = el("storageGcsBadge");
+  const fsBadge = el("storageFirestoreBadge");
+
+  if (gcsBadge) {
+    if (state.storageInfo.gcs) {
+      gcsBadge.textContent = `GCS: gs://${state.storageInfo.gcsBucket}`;
+      gcsBadge.classList.add("active");
+    } else {
+      gcsBadge.textContent = "GCS: Not configured";
+      gcsBadge.classList.remove("active");
+    }
+  }
+
+  if (fsBadge) {
+    if (state.storageInfo.firestore) {
+      fsBadge.textContent = `Firestore: ${state.storageInfo.firestoreCollection}`;
+      fsBadge.classList.add("active");
+    } else {
+      fsBadge.textContent = "Firestore: Not configured";
+      fsBadge.classList.remove("active");
+    }
+  }
+}
+
+function resolveEffectiveApiKey() {
+  const manualKey = (state.settings.apiKey || "").trim();
+  if (manualKey) return manualKey;
+  return (state.serverEnvApiKey || "").trim();
 }
 
 function applyVisualSettings() {
@@ -169,6 +300,9 @@ function applyVisualSettings() {
   if (el("layoutToggleLabel")) {
     el("layoutToggleLabel").textContent =
       state.settings.layoutMode === "stacked" ? "Stacked" : "Side-by-Side";
+  }
+  if (el("obsModeSelect")) {
+    el("obsModeSelect").value = state.settings.obsMode || "auto";
   }
   if (el("apiKeyInput")) el("apiKeyInput").value = state.settings.apiKey || "";
   if (el("modelSelect")) el("modelSelect").value = state.settings.model || DEFAULT_MODEL;
@@ -214,12 +348,36 @@ function bindUI() {
     broadcastSnapshot();
   });
 
+  el("obsModeSelect")?.addEventListener("change", (ev) => {
+    saveSettings({ obsMode: ev.target.value });
+    renderObsStage();
+    broadcastSnapshot();
+  });
+
+  el("copyObsUrlBtn")?.addEventListener("click", async () => {
+    const input = el("obsUrlCopyInput");
+    if (!input) return;
+    try {
+      await navigator.clipboard.writeText(input.value);
+      const btn = el("copyObsUrlBtn");
+      if (btn) {
+        const prev = btn.textContent;
+        btn.textContent = "Copied!";
+        setTimeout(() => {
+          btn.textContent = prev;
+        }, 1500);
+      }
+    } catch {
+      input.select();
+    }
+  });
+
   el("closeErrorBtn")?.addEventListener("click", () => hideError());
 
   // Settings inputs
   el("apiKeyInput")?.addEventListener("input", (ev) => {
     saveSettings({ apiKey: ev.target.value.trim() });
-    if (state.settings.apiKey) hideError();
+    if (resolveEffectiveApiKey()) hideError();
   });
 
   el("toggleKeyVisBtn")?.addEventListener("click", () => {
@@ -239,6 +397,7 @@ function bindUI() {
   el("fontScaleRange")?.addEventListener("input", (ev) => {
     saveSettings({ fontScale: Number(ev.target.value) });
     applyVisualSettings();
+    renderObsStage();
     broadcastSnapshot();
   });
 
@@ -275,6 +434,46 @@ function bindUI() {
   el("demoTurnBtn")?.addEventListener("click", () => insertSampleTurn());
   el("clearHistoryBtn")?.addEventListener("click", () => clearHistory());
   el("exportTranscriptBtn")?.addEventListener("click", () => exportTranscriptTxt());
+  el("exportSrtBtn")?.addEventListener("click", () => exportCurrentSessionSrt());
+
+  // Past Sessions & .SRT Popover controls
+  el("sessionsBtn")?.addEventListener("click", () => {
+    refreshPastSessionsList();
+  });
+  el("refreshSessionsBtn")?.addEventListener("click", () => {
+    refreshPastSessionsList();
+  });
+  el("srtLangFilterSelect")?.addEventListener("change", () => {
+    renderSelectedPastSessionDetail();
+  });
+  el("copySrtBtn")?.addEventListener("click", async () => {
+    const preview = el("srtPreviewBox");
+    if (!preview || !preview.textContent) return;
+    try {
+      await navigator.clipboard.writeText(preview.textContent);
+      const btn = el("copySrtBtn");
+      if (btn) {
+        const prev = btn.textContent;
+        btn.textContent = "Copied!";
+        setTimeout(() => {
+          btn.textContent = prev;
+        }, 1500);
+      }
+    } catch {
+      // Ignore clipboard error
+    }
+  });
+  el("loadSessionToStageBtn")?.addEventListener("click", () => {
+    if (!state.selectedPastSession || !Array.isArray(state.selectedPastSession.turns)) return;
+    state.sessionId = state.selectedPastSession.sessionId;
+    state.sessionStartEpochMs = state.selectedPastSession.startedAtEpochMs || Date.now();
+    state.historyTurns = [...state.selectedPastSession.turns];
+    renderHistory();
+    renderCurrentTurn();
+    renderObsStage();
+    broadcastSnapshot();
+    el("sessionsPopover")?.hidePopover?.();
+  });
 
   // Scroll tracking on history section
   const scroller = el("historyScroller");
@@ -433,7 +632,8 @@ async function ensureAudioContexts() {
     state.ctxUp = new AudioContext({ sampleRate: UPLINK_RATE });
     if (state.ctxUp.audioWorklet?.addModule) {
       try {
-        await state.ctxUp.audioWorklet.addModule("/audio/pcm-recorder-processor.js");
+        const recUrl = new URL("./audio/pcm-recorder-processor.js", window.location.href).href;
+        await state.ctxUp.audioWorklet.addModule(recUrl);
         state.workletUpReady = true;
       } catch {
         state.workletUpReady = false;
@@ -444,7 +644,8 @@ async function ensureAudioContexts() {
     state.ctxDown = new AudioContext({ sampleRate: DOWNLINK_RATE });
     if (state.ctxDown.audioWorklet?.addModule) {
       try {
-        await state.ctxDown.audioWorklet.addModule("/audio/pcm-player-processor.js");
+        const playUrl = new URL("./audio/pcm-player-processor.js", window.location.href).href;
+        await state.ctxDown.audioWorklet.addModule(playUrl);
         state.workletDownReady = true;
       } catch {
         state.workletDownReady = false;
@@ -509,9 +710,9 @@ async function startSession() {
   hideError();
   hideMicWarning();
 
-  const apiKey = (state.settings.apiKey || "").trim();
+  const apiKey = resolveEffectiveApiKey();
   if (!apiKey) {
-    showError("Please enter your Gemini API Key in Settings before starting.");
+    showError("Please enter your Gemini API Key in Settings (or set GEMINI_API_KEY in .env) before starting.");
     el("settingsPopover")?.showPopover?.();
     el("apiKeyInput")?.focus();
     return;
@@ -541,6 +742,8 @@ async function startSession() {
     state.activeModel = models[0];
     state.usage = emptyUsage();
     state.startedAt = performance.now();
+    state.sessionId = createNewSessionId();
+    state.sessionStartEpochMs = Date.now();
     state.silenceGated = false;
     state.lastSoundAt = performance.now();
     state.prerollFrames = [];
@@ -577,6 +780,7 @@ async function startSession() {
     startClockTimer();
     renderControlState();
     renderUsageMetrics();
+    renderObsStage();
     broadcastSnapshot();
   } catch (err) {
     await stopSession({ preserveError: true });
@@ -683,7 +887,7 @@ function wireAudioStreamToSession(stream) {
     state.recorderNode = scriptNode;
   }
 
-  // If usershared a browser tab and clicks "Stop sharing" in Chrome's bar, handle cleanly
+  // If user shared a browser tab and clicks "Stop sharing" in Chrome's bar, handle cleanly
   const track = stream.getAudioTracks()[0];
   if (track) {
     track.onended = () => {
@@ -774,6 +978,8 @@ async function stopSession({ preserveError = false } = {}) {
   // Commit any unfinished live turn into history before closing
   if (state.currentTurn.input.trim() || state.currentTurn.output.trim()) {
     finalizeCurrentTurn();
+  } else if (state.historyTurns.length > 0) {
+    persistCurrentSessionToServer();
   }
 
   state.sessionLoop?.close();
@@ -806,6 +1012,7 @@ async function stopSession({ preserveError = false } = {}) {
   }
   renderControlState();
   renderUsageMetrics();
+  renderObsStage();
   broadcastSnapshot();
 }
 
@@ -857,11 +1064,11 @@ function handleLiveEvent(ev) {
         minute: "2-digit",
         second: "2-digit",
       });
+      state.currentTurn.epochMs = Date.now();
     }
 
     const side = ev.type; // "input" or "output"
     if (ev.interim) {
-      // Interim hypothesis replaces only when no finalized increment exists yet
       state.currentTurn[side] = cleanTranscriptSpacing(ev.text);
     } else if (ev.finished) {
       state.currentTurn[side] = cleanTranscriptSpacing(ev.text);
@@ -873,6 +1080,7 @@ function handleLiveEvent(ev) {
 
     updateDetectedLanguages(state.currentTurn);
     renderCurrentTurn();
+    renderObsStage();
     broadcastSnapshot();
 
     // Safety fallback timer in case a simultaneous chunk stream pauses without turnComplete
@@ -908,8 +1116,16 @@ function finalizeCurrentTurn() {
 
   updateDetectedLanguages(state.currentTurn);
 
+  const nowEpoch = Date.now();
+  const startEpoch = state.currentTurn.epochMs || nowEpoch - 2500;
+
+  if (!state.sessionId) {
+    state.sessionId = createNewSessionId();
+    state.sessionStartEpochMs = startEpoch;
+  }
+
   const completed = {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    id: `${nowEpoch}-${Math.random().toString(36).slice(2, 7)}`,
     timestamp:
       state.currentTurn.startedAt ||
       new Date().toLocaleTimeString([], {
@@ -917,6 +1133,8 @@ function finalizeCurrentTurn() {
         minute: "2-digit",
         second: "2-digit",
       }),
+    epochMs: startEpoch,
+    endEpochMs: Math.max(startEpoch + 1200, nowEpoch),
     input,
     output,
     sourceLang: state.currentTurn.sourceLang === "auto" ? "th" : state.currentTurn.sourceLang,
@@ -934,15 +1152,361 @@ function finalizeCurrentTurn() {
     sourceLang: "auto",
     targetLang: "auto",
     startedAt: null,
+    epochMs: null,
   };
 
   appendHistoryCard(completed);
   updateTurnCounter();
   renderCurrentTurn();
+  renderObsStage();
   if (!state.userScrolledUp) {
     scrollToBottom();
   }
   broadcastSnapshot();
+  persistCurrentSessionToServer();
+}
+
+/**
+ * Render the compact, simple OBS View (`#obsStage`):
+ *
+ * Thai
+ * (ts.) ...
+ * (ts.) ...
+ * ----------
+ * English
+ * (ts.) ...
+ * (ts.) ...
+ *
+ * - Latest line in each language block is rendered in **bold** (`.obs-line.latest`).
+ * - Supports **Horizontal** mode (2 lines per language for bottom subtitles)
+ *   and **Vertical** mode (up to 10 lines per language for side panels).
+ */
+function resolveObsLayoutMode() {
+  if (urlObsLayout === "horizontal" || urlObsLayout === "vertical") {
+    return urlObsLayout;
+  }
+  const settingMode = state.settings.obsMode || "auto";
+  if (settingMode === "horizontal" || settingMode === "vertical") {
+    return settingMode;
+  }
+  // Auto-detect based on viewport dimensions
+  const w = window.innerWidth || 1280;
+  const h = window.innerHeight || 720;
+  if (h <= 450 || w / h >= 1.45) {
+    return "horizontal";
+  }
+  return "vertical";
+}
+
+function renderObsStage() {
+  const obsStage = el("obsStage");
+  const thaiListEl = el("obsThaiList");
+  const engListEl = el("obsEnglishList");
+  if (!obsStage || !thaiListEl || !engListEl) return;
+
+  const mode = resolveObsLayoutMode();
+  obsStage.classList.toggle("obs-horizontal", mode === "horizontal");
+  obsStage.classList.toggle("obs-vertical", mode === "vertical");
+
+  const maxLinesPerLang = mode === "horizontal" ? 2 : 10;
+
+  // Combine finalized history turns + current in-progress live turn (if any)
+  const allTurns = [...state.historyTurns];
+  const curIn = (state.currentTurn?.input || "").trim();
+  const curOut = (state.currentTurn?.output || "").trim();
+  if (curIn || curOut) {
+    allTurns.push({
+      timestamp:
+        state.currentTurn.startedAt ||
+        new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        }),
+      input: curIn,
+      output: curOut,
+      sourceLang: state.currentTurn.sourceLang,
+      targetLang: state.currentTurn.targetLang,
+    });
+  }
+
+  const thaiItems = [];
+  const engItems = [];
+
+  for (const turn of allTurns) {
+    const ts = turn.timestamp || "00:00:00";
+    const { thai, english } = extractThaiAndEnglish(turn);
+    if (thai) {
+      thaiItems.push({ ts, text: thai });
+    }
+    if (english) {
+      engItems.push({ ts, text: english });
+    }
+  }
+
+  const visibleThai = thaiItems.slice(-maxLinesPerLang);
+  const visibleEng = engItems.slice(-maxLinesPerLang);
+
+  renderObsLanguageLines(thaiListEl, visibleThai);
+  renderObsLanguageLines(engListEl, visibleEng);
+}
+
+function renderObsLanguageLines(container, items) {
+  container.innerHTML = "";
+  if (!items.length) {
+    const emptyLine = document.createElement("div");
+    emptyLine.className = "obs-line obs-empty";
+    emptyLine.textContent = "(ts.) —";
+    container.appendChild(emptyLine);
+    return;
+  }
+
+  items.forEach((item, idx) => {
+    const isLatest = idx === items.length - 1;
+    const row = document.createElement("div");
+    row.className = isLatest ? "obs-line latest" : "obs-line";
+
+    const tsSpan = document.createElement("span");
+    tsSpan.className = "obs-ts";
+    tsSpan.textContent = `(${item.ts})`;
+
+    const textNode = document.createElement(isLatest ? "strong" : "span");
+    textNode.className = "obs-text";
+    textNode.dir = "auto";
+    textNode.textContent = ` ${item.text}`;
+
+    row.appendChild(tsSpan);
+    row.appendChild(textNode);
+    container.appendChild(row);
+  });
+}
+
+function loadBrowserSessions() {
+  try {
+    const raw = localStorage.getItem(LOCAL_SESSIONS_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw) || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveBrowserSession(record) {
+  try {
+    const map = loadBrowserSessions();
+    map[record.sessionId] = record;
+    // Keep most recent 30 sessions in browser localStorage
+    const sorted = Object.values(map).sort((a, b) =>
+      String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))
+    );
+    const trimmed = {};
+    for (const item of sorted.slice(0, 30)) {
+      trimmed[item.sessionId] = item;
+    }
+    localStorage.setItem(LOCAL_SESSIONS_KEY, JSON.stringify(trimmed));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+/**
+ * Persist the active session's turns to browser localStorage (for GitHub Pages / offline use)
+ * and to the backend (`POST /api/sessions`), which writes `.srt` files locally and syncs to
+ * Firestore and Google Cloud Storage.
+ */
+async function persistCurrentSessionToServer() {
+  if (isDisplayMode || !state.historyTurns.length) return;
+  if (!state.sessionId) {
+    state.sessionId = createNewSessionId();
+    state.sessionStartEpochMs = state.historyTurns[0]?.epochMs || Date.now();
+  }
+
+  const startEpochMs = state.sessionStartEpochMs || Date.now();
+  const nowIso = new Date().toISOString();
+  const payload = {
+    sessionId: state.sessionId,
+    title: state.settings.eventContext
+      ? state.settings.eventContext.slice(0, 80)
+      : `Session ${new Date(startEpochMs).toLocaleString()}`,
+    startedAtEpochMs: startEpochMs,
+    startEpochMs,
+    updatedAt: nowIso,
+    turnCount: state.historyTurns.length,
+    eventContext: state.settings.eventContext || "",
+    turns: state.historyTurns,
+  };
+
+  // Always save to browser localStorage so static hosting (e.g. GitHub Pages) supports Past Sessions & SRT download
+  saveBrowserSession(payload);
+
+  try {
+    const query = state.clientToken ? `?token=${encodeURIComponent(state.clientToken)}` : "";
+    await fetch(`/api/sessions${query}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    // Running on static host (e.g. GitHub Pages) without server.js backend
+  }
+}
+
+/**
+ * Fetch and render the list of Past Sessions & `.SRT` files for this browser session.
+ * Uses `/api/sessions` when running with `server.js` / Cloud Run, or falls back to
+ * browser `localStorage` when running as a static site (e.g. GitHub Pages).
+ */
+async function refreshPastSessionsList() {
+  const listEl = el("sessionsList");
+  if (!listEl) return;
+
+  try {
+    const query = state.clientToken ? `?token=${encodeURIComponent(state.clientToken)}` : "";
+    const res = await fetch(`/api/sessions${query}`, { credentials: "same-origin" });
+    if (res.ok) {
+      const data = await res.json();
+      state.pastSessions = Array.isArray(data.sessions) ? data.sessions : [];
+      renderPastSessionsList();
+      return;
+    }
+  } catch {
+    // Fall back to browser localStorage below
+  }
+
+  const localMap = loadBrowserSessions();
+  state.pastSessions = Object.values(localMap).sort((a, b) =>
+    String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))
+  );
+  renderPastSessionsList();
+}
+
+function renderPastSessionsList() {
+  const listEl = el("sessionsList");
+  if (!listEl) return;
+  listEl.innerHTML = "";
+
+  if (!state.pastSessions.length) {
+    const empty = document.createElement("div");
+    empty.className = "session-detail-empty";
+    empty.style.padding = "1.5rem 0.5rem";
+    empty.textContent = "No saved sessions yet. Start speaking or click '+ Sample Turn' in Settings.";
+    listEl.appendChild(empty);
+    return;
+  }
+
+  for (const sess of state.pastSessions) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className =
+      state.selectedPastSession?.sessionId === sess.sessionId
+        ? "session-item active"
+        : "session-item";
+
+    const titleRow = document.createElement("div");
+    titleRow.className = "session-item-title";
+    const titleSpan = document.createElement("span");
+    titleSpan.textContent = sess.title || sess.sessionId;
+    const countSpan = document.createElement("span");
+    countSpan.textContent = `${sess.turnCount || 0} turns`;
+    titleRow.appendChild(titleSpan);
+    titleRow.appendChild(countSpan);
+
+    const metaRow = document.createElement("div");
+    metaRow.className = "session-item-meta";
+    const dateStr = sess.updatedAt ? new Date(sess.updatedAt).toLocaleString() : "";
+    metaRow.textContent = `${sess.sessionId} · ${dateStr}`;
+
+    btn.appendChild(titleRow);
+    btn.appendChild(metaRow);
+
+    btn.addEventListener("click", () => {
+      selectPastSession(sess.sessionId);
+    });
+
+    listEl.appendChild(btn);
+  }
+
+  if (!state.selectedPastSession && state.pastSessions.length > 0) {
+    selectPastSession(state.pastSessions[0].sessionId);
+  }
+}
+
+async function selectPastSession(sessionId) {
+  try {
+    const query = state.clientToken ? `?token=${encodeURIComponent(state.clientToken)}` : "";
+    const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}${query}`, {
+      credentials: "same-origin",
+    });
+    if (res.ok) {
+      const data = await res.json();
+      state.selectedPastSession = data.session || data;
+      renderPastSessionsList();
+      renderSelectedPastSessionDetail();
+      return;
+    }
+  } catch {
+    // Fall back to browser localStorage below
+  }
+
+  const localMap = loadBrowserSessions();
+  if (localMap[sessionId]) {
+    state.selectedPastSession = localMap[sessionId];
+    renderPastSessionsList();
+    renderSelectedPastSessionDetail();
+  }
+}
+
+let activeSrtBlobUrl = null;
+
+function renderSelectedPastSessionDetail() {
+  const emptyEl = el("sessionDetailEmpty");
+  const contentEl = el("sessionDetailContent");
+  const titleEl = el("selectedSessionTitle");
+  const metaEl = el("selectedSessionMeta");
+  const previewEl = el("srtPreviewBox");
+  const downloadBtn = el("downloadSrtLink");
+  const langSelect = el("srtLangFilterSelect");
+
+  const sess = state.selectedPastSession;
+  if (!sess) {
+    if (emptyEl) emptyEl.hidden = false;
+    if (contentEl) contentEl.hidden = true;
+    return;
+  }
+
+  if (emptyEl) emptyEl.hidden = true;
+  if (contentEl) contentEl.hidden = false;
+
+  const langMode = langSelect?.value || "combined";
+  if (titleEl) titleEl.textContent = sess.title || sess.sessionId;
+  if (metaEl) {
+    metaEl.textContent = `${sess.turnCount || (sess.turns || []).length} turns`;
+  }
+
+  const baseEpoch = sess.startEpochMs || sess.startedAtEpochMs;
+  const srtText =
+    langMode === "th"
+      ? sess.srtThai || sess.srtTh || turnsToSrt(sess.turns || [], "th", baseEpoch)
+      : langMode === "en"
+      ? sess.srtEnglish || sess.srtEn || turnsToSrt(sess.turns || [], "en", baseEpoch)
+      : sess.srtCombined || turnsToSrt(sess.turns || [], "combined", baseEpoch);
+
+  if (previewEl) {
+    previewEl.textContent = srtText || "(Empty .srt)";
+  }
+
+  if (downloadBtn) {
+    if (activeSrtBlobUrl) {
+      URL.revokeObjectURL(activeSrtBlobUrl);
+      activeSrtBlobUrl = null;
+    }
+    const blob = new Blob([srtText || ""], { type: "text/plain;charset=utf-8" });
+    activeSrtBlobUrl = URL.createObjectURL(blob);
+    downloadBtn.href = activeSrtBlobUrl;
+    const suffix = langMode === "combined" ? "" : `.${langMode}`;
+    downloadBtn.download = `${sess.sessionId}${suffix}.srt`;
+  }
 }
 
 /**
@@ -1315,8 +1879,10 @@ function insertSampleTurn() {
       minute: "2-digit",
       second: "2-digit",
     }),
+    epochMs: Date.now(),
   };
   renderCurrentTurn();
+  renderObsStage();
   broadcastSnapshot();
 
   setTimeout(() => {
@@ -1326,15 +1892,19 @@ function insertSampleTurn() {
 
 function clearHistory() {
   state.historyTurns = [];
+  state.sessionId = createNewSessionId();
+  state.sessionStartEpochMs = Date.now();
   state.currentTurn = {
     input: "",
     output: "",
     sourceLang: "auto",
     targetLang: "auto",
     startedAt: null,
+    epochMs: null,
   };
   renderHistory();
   renderCurrentTurn();
+  renderObsStage();
   broadcastSnapshot();
 }
 
@@ -1353,12 +1923,34 @@ function exportTranscriptTxt() {
   URL.revokeObjectURL(url);
 }
 
+function exportCurrentSessionSrt() {
+  if (!state.historyTurns.length) return;
+  const srt = turnsToSrt(
+    state.historyTurns,
+    "combined",
+    state.sessionStartEpochMs || state.historyTurns[0]?.epochMs || Date.now()
+  );
+  const blob = new Blob([srt], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  const fileBase = state.sessionId || `livetranscribe-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}`;
+  a.download = `${fileBase}.srt`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 /**
  * Real-time sync between Operator View and OBS Browser Source / Stage Display (`?view=display`).
- * Uses both `BroadcastChannel` (same browser) and `/ws-relay` (cross-browser / OBS CEF).
+ * Scoped by `clientToken` (via cookie `lt_token` and/or `?token=...`) so multiple sessions
+ * can run concurrently without interfering with one another.
  */
 function setupSyncChannels() {
-  if (state.bc) {
+  if (typeof BroadcastChannel !== "undefined") {
+    const channelName = state.clientToken
+      ? `livetranscribe_sync_${state.clientToken}`
+      : "livetranscribe_sync";
+    state.bc = new BroadcastChannel(channelName);
     state.bc.onmessage = (ev) => {
       if (ev.data?.type === "snapshot" && isDisplayMode) {
         applyRemoteSnapshot(ev.data);
@@ -1372,7 +1964,8 @@ function setupSyncChannels() {
 function connectRelayWebSocket() {
   if (typeof WebSocket === "undefined") return;
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const wsUrl = `${proto}//${window.location.host}/ws-relay`;
+  const tokenQuery = state.clientToken ? `?token=${encodeURIComponent(state.clientToken)}` : "";
+  const wsUrl = `${proto}//${window.location.host}/ws-relay${tokenQuery}`;
 
   try {
     const ws = new WebSocket(wsUrl);
@@ -1410,6 +2003,7 @@ function broadcastSnapshot() {
     silenceGated: state.silenceGated,
     fontScale: state.settings.fontScale,
     layoutMode: state.settings.layoutMode,
+    obsMode: state.settings.obsMode,
     historyTurns: state.historyTurns.slice(-50),
     currentTurn: state.currentTurn,
   };
@@ -1440,6 +2034,9 @@ function applyRemoteSnapshot(snapshot) {
   if (snapshot.layoutMode) {
     state.settings.layoutMode = snapshot.layoutMode;
   }
+  if (snapshot.obsMode) {
+    state.settings.obsMode = snapshot.obsMode;
+  }
   applyVisualSettings();
 
   if (Array.isArray(snapshot.historyTurns)) {
@@ -1450,6 +2047,7 @@ function applyRemoteSnapshot(snapshot) {
     state.currentTurn = snapshot.currentTurn;
     renderCurrentTurn();
   }
+  renderObsStage();
   if (!state.userScrolledUp) {
     scrollToBottom();
   }
