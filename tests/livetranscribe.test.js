@@ -109,7 +109,20 @@ test("server: serves static assets, redirects LAN HTTP operator to HTTPS, allows
     assert.equal(res.status, 200);
     assert.match(res.body, /LiveTranscribe/);
     assert.match(res.body, /0 tokens/);
+    assert.match(res.body, /manifest\.webmanifest/);
     assert.ok(res.headers["set-cookie"]?.[0]?.includes("lt_token="));
+
+    // 1b. PWA manifest and Service Worker are served with proper MIME types
+    const manifestRes = await httpGet(port, "/manifest.webmanifest", { Host: `localhost:${port}` });
+    assert.equal(manifestRes.status, 200);
+    assert.match(manifestRes.headers["content-type"] || "", /application\/manifest\+json/);
+    const manifestJson = JSON.parse(manifestRes.body);
+    assert.equal(manifestJson.short_name, "LiveTranscribe");
+    assert.equal(manifestJson.display, "standalone");
+
+    const swRes = await httpGet(port, "/sw.js", { Host: `localhost:${port}` });
+    assert.equal(swRes.status, 200);
+    assert.match(swRes.headers["content-type"] || "", /application\/javascript/);
 
     // 2. LAN IP plain HTTP operator view auto-redirects (302) to HTTPS so getUserMedia works
     const lanRes = await httpGet(port, "/", { Host: `192.168.10.61:${port}` });

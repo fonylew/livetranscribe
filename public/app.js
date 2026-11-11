@@ -172,6 +172,7 @@ async function init() {
 
   applyVisualSettings();
   bindUI();
+  setupPwaSupport();
 
   await loadServerConfig();
   restoreLiveSnapshotFromLocal();
@@ -244,6 +245,46 @@ function updateEnvApiKeyUI() {
   } else {
     if (badge) badge.hidden = true;
   }
+}
+
+function setupPwaSupport() {
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("./sw.js").catch(() => {
+        // Ignore service worker registration errors in unsupported contexts
+      });
+    });
+  }
+
+  let deferredInstallPrompt = null;
+  const installBtn = el("installPwaBtn");
+
+  window.addEventListener("beforeinstallprompt", (ev) => {
+    ev.preventDefault();
+    deferredInstallPrompt = ev;
+    if (installBtn && !isDisplayMode) {
+      installBtn.hidden = false;
+    }
+  });
+
+  installBtn?.addEventListener("click", async () => {
+    if (!deferredInstallPrompt) return;
+    deferredInstallPrompt.prompt();
+    try {
+      await deferredInstallPrompt.userChoice;
+    } catch {
+      // Ignore
+    }
+    deferredInstallPrompt = null;
+    installBtn.hidden = true;
+  });
+
+  window.addEventListener("appinstalled", () => {
+    deferredInstallPrompt = null;
+    if (installBtn) {
+      installBtn.hidden = true;
+    }
+  });
 }
 
 function updateObsPairingLinks() {
