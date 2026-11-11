@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css?v=5" />
+    <link rel="stylesheet" href="./styles.css?v=6" />
   </head>
   <body>
     <!-- Compact Persistent Control Bar (Hidden in ?view=display OBS Mode) -->
@@ -401,26 +401,19 @@
         <div class="current-header">
           <div class="current-title-group">
             <span class="live-pulse" id="livePulse"></span>
-            <span class="section-title" id="currentStatusLabel">Current Transcription</span>
-            <span class="direction-pill" id="currentDirectionPill">TH ⇄ EN</span>
+            <span class="section-title" id="currentStatusLabel">Latest / Live</span>
           </div>
           <span class="current-hint" id="currentHint">Waiting for speech...</span>
         </div>
 
         <div class="bilingual-grid current-grid" id="currentGrid">
-          <div class="transcript-col source-col">
-            <div class="col-label">
-              <span class="lang-tag" id="currentSourceLangTag">SPEAKER</span>
-              <span class="col-subtitle">Original Speech</span>
-            </div>
+          <div class="transcript-col source-col inline-turn-row">
+            <span class="lang-tag th" id="currentSourceLangTag">TH</span>
             <div class="transcript-text current-text" id="currentInputText" dir="auto"></div>
           </div>
 
-          <div class="transcript-col target-col">
-            <div class="col-label">
-              <span class="lang-tag translated" id="currentTargetLangTag">TRANSLATION</span>
-              <span class="col-subtitle">Translated Output</span>
-            </div>
+          <div class="transcript-col target-col inline-turn-row">
+            <span class="lang-tag en" id="currentTargetLangTag">EN</span>
             <div class="transcript-text current-text translated-text" id="currentOutputText" dir="auto"></div>
           </div>
         </div>
@@ -453,6 +446,6 @@
       </section>
     </main>
 
-    <script type="module" src="./app.js?v=5"></script>
+    <script type="module" src="./app.js?v=6"></script>
   </body>
 </html>

@@ -32,8 +32,17 @@ export function formatSrtTimestamp(ms = 0) {
 export function extractThaiAndEnglish(turn = {}) {
   const input = String(turn.input || "").trim();
   const output = String(turn.output || "").trim();
-  const src = turn.sourceLang || "th";
+  const inputHasThai = /[\u0E00-\u0E7F]/.test(input);
+  const outputHasThai = /[\u0E00-\u0E7F]/.test(output);
 
+  if (inputHasThai && !outputHasThai) {
+    return { thai: input, english: output };
+  }
+  if (outputHasThai && !inputHasThai) {
+    return { thai: output, english: input };
+  }
+
+  const src = turn.sourceLang || "th";
   if (src === "en") {
     return {
       english: input,

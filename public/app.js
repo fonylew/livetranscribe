@@ -34,6 +34,7 @@ import {
 
 const STORAGE_KEY = "livetranscribe_settings_v1";
 const LOCAL_SESSIONS_KEY = "livetranscribe_sessions_v1";
+const LIVE_SNAPSHOT_KEY = "livetranscribe_live_snapshot_v1";
 const HISTORY_LIMIT = 300;
 
 /** Noise floor & Smart Silence Gate constants */
@@ -119,6 +120,7 @@ const state = {
 
   // Cross-window / OBS sync channels
   bc: null,
+  bcGlobal: null,
   relayWs: null,
 };
 
@@ -172,6 +174,7 @@ async function init() {
   bindUI();
 
   await loadServerConfig();
+  restoreLiveSnapshotFromLocal();
   setupSyncChannels();
 
   if (!isDisplayMode) {
@@ -1099,7 +1102,7 @@ function updateDetectedLanguages(turn) {
 
   if (src !== "auto") {
     turn.sourceLang = src;
-    turn.targetLang = tgt !== "auto" ? tgt : src === "th" ? "en" : "th";
+    turn.targetLang = src === "th" ? "en" : "th";
   } else if (tgt !== "auto") {
     turn.targetLang = tgt;
     turn.sourceLang = tgt === "th" ? "en" : "th";
@@ -1249,6 +1252,7 @@ function renderObsStage() {
 
   renderObsLanguageLines(thaiListEl, visibleThai);
   renderObsLanguageLines(engListEl, visibleEng);
+  obsStage.scrollTop = obsStage.scrollHeight;
 }
 
 function renderObsLanguageLines(container, items) {
@@ -1256,7 +1260,7 @@ function renderObsLanguageLines(container, items) {
   if (!items.length) {
     const emptyLine = document.createElement("div");
     emptyLine.className = "obs-line obs-empty";
-    emptyLine.textContent = "(ts.) —";
+    emptyLine.textContent = "Waiting for speech...";
     container.appendChild(emptyLine);
     return;
   }
@@ -1510,16 +1514,31 @@ function renderSelectedPastSessionDetail() {
 }
 
 /**
- * Render the Current Live Transcription section at the bottom of the screen.
+ * Render the Current / Latest Live Transcription section at the bottom of the screen.
+ * When live speech is actively streaming, displays `state.currentTurn`.
+ * When between utterances, keeps displaying the latest finalized turn at the bottom of the screen.
  */
 function renderCurrentTurn() {
-  const { input, output, sourceLang, targetLang } = state.currentTurn;
-  const hasContent = Boolean(input.trim() || output.trim());
+  const liveInput = (state.currentTurn?.input || "").trim();
+  const liveOutput = (state.currentTurn?.output || "").trim();
+  const isLiveStreaming = Boolean(liveInput || liveOutput);
+
+  const lastHistoryTurn =
+    state.historyTurns.length > 0
+      ? state.historyTurns[state.historyTurns.length - 1]
+      : null;
+
+  const displayTurn = isLiveStreaming
+    ? state.currentTurn
+    : lastHistoryTurn || state.currentTurn;
+
+  const { input = "", output = "", sourceLang = "auto", targetLang = "auto" } =
+    displayTurn || {};
 
   const inputEl = el("currentInputText");
   const outputEl = el("currentOutputText");
   const pulseEl = el("livePulse");
-  const dirPill = el("currentDirectionPill");
+  const statusLabelEl = el("currentStatusLabel");
   const srcTag = el("currentSourceLangTag");
   const tgtTag = el("currentTargetLangTag");
   const hintEl = el("currentHint");
@@ -1527,36 +1546,27 @@ function renderCurrentTurn() {
   if (inputEl) inputEl.textContent = input;
   if (outputEl) outputEl.textContent = output;
   if (pulseEl) pulseEl.classList.toggle("active", state.running && !state.micMuted);
+  if (statusLabelEl) {
+    statusLabelEl.textContent = isLiveStreaming ? "Live" : "Latest";
+  }
 
-  if (sourceLang === "th" || targetLang === "en") {
-    if (dirPill) dirPill.textContent = "TH → EN";
+  if (sourceLang === "en" || targetLang === "th") {
     if (srcTag) {
-      srcTag.textContent = "TH (ไทย)";
-      srcTag.className = "lang-tag th";
-    }
-    if (tgtTag) {
-      tgtTag.textContent = "EN (English)";
-      tgtTag.className = "lang-tag en";
-    }
-  } else if (sourceLang === "en" || targetLang === "th") {
-    if (dirPill) dirPill.textContent = "EN → TH";
-    if (srcTag) {
-      srcTag.textContent = "EN (English)";
+      srcTag.textContent = "EN";
       srcTag.className = "lang-tag en";
     }
     if (tgtTag) {
-      tgtTag.textContent = "TH (ไทย)";
+      tgtTag.textContent = "TH";
       tgtTag.className = "lang-tag th";
     }
   } else {
-    if (dirPill) dirPill.textContent = "TH ⇄ EN";
     if (srcTag) {
-      srcTag.textContent = "SPEAKER (TH / EN)";
-      srcTag.className = "lang-tag";
+      srcTag.textContent = "TH";
+      srcTag.className = "lang-tag th";
     }
     if (tgtTag) {
-      tgtTag.textContent = "TRANSLATION (EN / TH)";
-      tgtTag.className = "lang-tag translated";
+      tgtTag.textContent = "EN";
+      tgtTag.className = "lang-tag en";
     }
   }
 
@@ -1564,13 +1574,13 @@ function renderCurrentTurn() {
     if (!state.running) {
       hintEl.textContent = "Session idle";
     } else if (state.micMuted) {
-      hintEl.textContent = "Mic is OFF — Stream paused (0 tokens/sec)";
-    } else if (state.silenceGated && !hasContent) {
-      hintEl.textContent = "Silence Gate active — Waiting for speech (0 tokens/sec)";
-    } else if (hasContent) {
-      hintEl.textContent = "Streaming live transcription & translation...";
+      hintEl.textContent = "Mic OFF · Paused";
+    } else if (state.silenceGated && !isLiveStreaming) {
+      hintEl.textContent = "Silence Gate · Paused";
+    } else if (isLiveStreaming) {
+      hintEl.textContent = "Streaming live...";
     } else {
-      hintEl.textContent = "Listening for Thai or English speech...";
+      hintEl.textContent = "Listening...";
     }
   }
 }
@@ -1586,6 +1596,9 @@ function renderHistory() {
     appendHistoryCard(turn);
   }
   updateTurnCounter();
+  if (!state.userScrolledUp) {
+    scrollToBottom(false);
+  }
 }
 
 function appendHistoryCard(turn) {
@@ -1597,62 +1610,49 @@ function appendHistoryCard(turn) {
   const card = document.createElement("article");
   card.className = "history-card";
 
-  const srcUpper = turn.sourceLang === "th" ? "TH (ไทย)" : "EN (English)";
-  const tgtUpper = turn.targetLang === "th" ? "TH (ไทย)" : "EN (English)";
-  const dirLabel = turn.sourceLang === "th" ? "Thai → English" : "English → Thai";
-
-  const meta = document.createElement("div");
-  meta.className = "history-meta";
-
-  const dirSpan = document.createElement("span");
-  dirSpan.className = "history-direction";
-  dirSpan.textContent = dirLabel;
-
-  const timeSpan = document.createElement("time");
-  timeSpan.textContent = turn.timestamp || "";
-
-  meta.appendChild(dirSpan);
-  meta.appendChild(timeSpan);
+  const isSourceEn = turn.sourceLang === "en";
+  const srcShort = isSourceEn ? "EN" : "TH";
+  const tgtShort = isSourceEn ? "TH" : "EN";
 
   const grid = document.createElement("div");
   grid.className = "bilingual-grid";
 
-  // Source Column
+  // Source Inline Row: [TH/EN] text ... timestamp
   const srcCol = document.createElement("div");
-  srcCol.className = "transcript-col source-col";
-  const srcHeader = document.createElement("div");
-  srcHeader.className = "col-label";
+  srcCol.className = "transcript-col source-col inline-turn-row";
   const srcBadge = document.createElement("span");
-  srcBadge.className = `lang-tag ${turn.sourceLang === "th" ? "th" : "en"}`;
-  srcBadge.textContent = srcUpper;
-  srcHeader.appendChild(srcBadge);
+  srcBadge.className = `lang-tag ${isSourceEn ? "en" : "th"}`;
+  srcBadge.textContent = srcShort;
   const srcBody = document.createElement("div");
   srcBody.className = "transcript-text";
   srcBody.dir = "auto";
   srcBody.textContent = turn.input || "—";
-  srcCol.appendChild(srcHeader);
+  srcCol.appendChild(srcBadge);
   srcCol.appendChild(srcBody);
 
-  // Target Column
+  if (turn.timestamp) {
+    const timeSpan = document.createElement("time");
+    timeSpan.className = "turn-time";
+    timeSpan.textContent = turn.timestamp;
+    srcCol.appendChild(timeSpan);
+  }
+
+  // Target Inline Row: [EN/TH] translated text
   const tgtCol = document.createElement("div");
-  tgtCol.className = "transcript-col target-col";
-  const tgtHeader = document.createElement("div");
-  tgtHeader.className = "col-label";
+  tgtCol.className = "transcript-col target-col inline-turn-row";
   const tgtBadge = document.createElement("span");
-  tgtBadge.className = `lang-tag ${turn.targetLang === "th" ? "th" : "en"}`;
-  tgtBadge.textContent = tgtUpper;
-  tgtHeader.appendChild(tgtBadge);
+  tgtBadge.className = `lang-tag ${isSourceEn ? "th" : "en"}`;
+  tgtBadge.textContent = tgtShort;
   const tgtBody = document.createElement("div");
   tgtBody.className = "transcript-text translated-text";
   tgtBody.dir = "auto";
   tgtBody.textContent = turn.output || "—";
-  tgtCol.appendChild(tgtHeader);
+  tgtCol.appendChild(tgtBadge);
   tgtCol.appendChild(tgtBody);
 
   grid.appendChild(srcCol);
   grid.appendChild(tgtCol);
 
-  card.appendChild(meta);
   card.appendChild(grid);
   listEl.appendChild(card);
 }
@@ -1669,12 +1669,14 @@ function updateTurnCounter() {
   }
 }
 
-function scrollToBottom(smooth = true) {
+function scrollToBottom(smooth = false) {
   const scroller = el("historyScroller");
   if (!scroller) return;
-  scroller.scrollTo({
-    top: scroller.scrollHeight,
-    behavior: smooth ? "smooth" : "auto",
+  requestAnimationFrame(() => {
+    scroller.scrollTo({
+      top: scroller.scrollHeight,
+      behavior: smooth ? "smooth" : "auto",
+    });
   });
 }
 
@@ -1941,22 +1943,85 @@ function exportCurrentSessionSrt() {
 }
 
 /**
+ * Restore the most recent live snapshot from `localStorage` so that opening OBS View (`?view=display`)
+ * mid-session (including on static GitHub Pages) immediately displays all existing turns.
+ */
+function restoreLiveSnapshotFromLocal() {
+  try {
+    const raw = localStorage.getItem(LIVE_SNAPSHOT_KEY);
+    if (raw) {
+      const snap = JSON.parse(raw);
+      if (snap && Array.isArray(snap.historyTurns)) {
+        state.historyTurns = snap.historyTurns;
+      }
+      if (snap && snap.currentTurn && isDisplayMode) {
+        state.currentTurn = snap.currentTurn;
+      }
+      return;
+    }
+    // Fallback to most recent saved browser session if any
+    const sessions = Object.values(loadBrowserSessions()).sort((a, b) =>
+      String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))
+    );
+    if (sessions.length > 0 && Array.isArray(sessions[0].turns)) {
+      state.historyTurns = sessions[0].turns;
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+/**
  * Real-time sync between Operator View and OBS Browser Source / Stage Display (`?view=display`).
- * Scoped by `clientToken` (via cookie `lt_token` and/or `?token=...`) so multiple sessions
- * can run concurrently without interfering with one another.
+ * Uses:
+ * 1. `BroadcastChannel` (`livetranscribe_sync` + token-scoped channel) with `request_snapshot` handshake
+ * 2. `localStorage` `storage` event (`livetranscribe_live_snapshot_v1`) for instant cross-tab sync
+ * 3. `/ws-relay` WebSocket (for OBS Studio CEF Browser Source on Local / Cloud Run)
  */
 function setupSyncChannels() {
+  const handleChannelMessage = (ev) => {
+    const msg = ev.data;
+    if (!msg) return;
+    if (msg.type === "snapshot" && isDisplayMode) {
+      applyRemoteSnapshot(msg);
+    } else if (msg.type === "request_snapshot" && !isDisplayMode) {
+      broadcastSnapshot();
+    }
+  };
+
   if (typeof BroadcastChannel !== "undefined") {
-    const channelName = state.clientToken
-      ? `livetranscribe_sync_${state.clientToken}`
-      : "livetranscribe_sync";
-    state.bc = new BroadcastChannel(channelName);
-    state.bc.onmessage = (ev) => {
-      if (ev.data?.type === "snapshot" && isDisplayMode) {
-        applyRemoteSnapshot(ev.data);
+    state.bcGlobal = new BroadcastChannel("livetranscribe_sync");
+    state.bcGlobal.onmessage = handleChannelMessage;
+
+    if (state.clientToken) {
+      state.bc = new BroadcastChannel(`livetranscribe_sync_${state.clientToken}`);
+      state.bc.onmessage = handleChannelMessage;
+    }
+
+    if (isDisplayMode) {
+      // Immediately ask any open Operator tab for its latest live snapshot
+      try {
+        state.bcGlobal.postMessage({ type: "request_snapshot" });
+        state.bc?.postMessage({ type: "request_snapshot" });
+      } catch {
+        // Ignore
       }
-    };
+    }
   }
+
+  // Cross-tab storage listener (works on GitHub Pages and local browsers)
+  window.addEventListener("storage", (ev) => {
+    if (ev.key === LIVE_SNAPSHOT_KEY && ev.newValue && isDisplayMode) {
+      try {
+        const snap = JSON.parse(ev.newValue);
+        if (snap?.type === "snapshot") {
+          applyRemoteSnapshot(snap);
+        }
+      } catch {
+        // Ignore
+      }
+    }
+  });
 
   connectRelayWebSocket();
 }
@@ -1990,7 +2055,7 @@ function connectRelayWebSocket() {
 
     ws.onerror = () => {};
   } catch {
-    // Running as static file without server.js relay; BroadcastChannel still works
+    // Running as static file without server.js relay; BroadcastChannel + localStorage still work
   }
 }
 
@@ -1998,6 +2063,7 @@ function broadcastSnapshot() {
   if (isDisplayMode) return;
   const payload = {
     type: "snapshot",
+    updatedAt: Date.now(),
     running: state.running,
     micMuted: state.micMuted,
     silenceGated: state.silenceGated,
@@ -2009,6 +2075,13 @@ function broadcastSnapshot() {
   };
 
   try {
+    localStorage.setItem(LIVE_SNAPSHOT_KEY, JSON.stringify(payload));
+  } catch {
+    // Ignore quota errors
+  }
+
+  try {
+    state.bcGlobal?.postMessage(payload);
     state.bc?.postMessage(payload);
   } catch {
     // Ignore
