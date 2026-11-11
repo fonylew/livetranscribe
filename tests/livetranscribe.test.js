@@ -426,9 +426,13 @@ test("instructions: detects Thai vs English accurately", () => {
   assert.equal(detectLanguage(""), "auto");
 });
 
-test("instructions: cleans extra spaces between Thai characters", () => {
+test("instructions: cleans extra spaces between Thai characters and strips Chinese/non-Thai/non-English characters", () => {
   const raw = "สวัสดี  ครับ ทุกท่าน";
   assert.equal(cleanTranscriptSpacing(raw), "สวัสดี ครับ ทุกท่าน");
+  assert.equal(cleanTranscriptSpacing("哼。"), "");
+  assert.equal(cleanTranscriptSpacing("<no speech detected>"), "");
+  assert.equal(cleanTranscriptSpacing("𖢄𖢄 𖢄𖢄 𖢄𖢄𖢄𖢄."), "");
+  assert.equal(cleanTranscriptSpacing("哼 คือ Agent CLI ค่ะ").trim(), "คือ Agent CLI ค่ะ");
 });
 
 test("usage: calculates tokens (for main screen) and API cost (for popover) + saved tokens when mic is off", () => {

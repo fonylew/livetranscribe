@@ -395,6 +395,8 @@ function bindUI() {
     saveSettings({ model: ev.target.value });
     state.activeModel = ev.target.value;
     renderUsageMetrics();
+    renderObsStage();
+    broadcastSnapshot();
   });
 
   el("fontScaleRange")?.addEventListener("input", (ev) => {
@@ -1113,10 +1115,25 @@ function finalizeCurrentTurn() {
   clearTimeout(state.turnIdleTimer);
   state.turnIdleTimer = null;
 
-  const input = state.currentTurn.input.trim();
-  const output = state.currentTurn.output.trim();
-  if (!input && !output) return;
+  const input = cleanTranscriptSpacing(state.currentTurn.input);
+  const output = cleanTranscriptSpacing(state.currentTurn.output);
+  if (!input && !output) {
+    state.currentTurn = {
+      input: "",
+      output: "",
+      sourceLang: "auto",
+      targetLang: "auto",
+      startedAt: null,
+      epochMs: null,
+    };
+    renderCurrentTurn();
+    renderObsStage();
+    broadcastSnapshot();
+    return;
+  }
 
+  state.currentTurn.input = input;
+  state.currentTurn.output = output;
   updateDetectedLanguages(state.currentTurn);
 
   const nowEpoch = Date.now();
@@ -1207,16 +1224,22 @@ function renderObsStage() {
   const engListEl = el("obsEnglishList");
   if (!obsStage || !thaiListEl || !engListEl) return;
 
+  const poweredByEl = el("obsPoweredBy");
+  if (poweredByEl) {
+    const modelName = state.activeModel || state.settings.model || DEFAULT_MODEL;
+    poweredByEl.textContent = `powered by ${modelName}`;
+  }
+
   const mode = resolveObsLayoutMode();
   obsStage.classList.toggle("obs-horizontal", mode === "horizontal");
   obsStage.classList.toggle("obs-vertical", mode === "vertical");
 
-  const maxLinesPerLang = mode === "horizontal" ? 2 : 10;
+  const maxLinesPerLang = mode === "horizontal" ? 6 : 25;
 
   // Combine finalized history turns + current in-progress live turn (if any)
   const allTurns = [...state.historyTurns];
-  const curIn = (state.currentTurn?.input || "").trim();
-  const curOut = (state.currentTurn?.output || "").trim();
+  const curIn = cleanTranscriptSpacing(state.currentTurn?.input || "");
+  const curOut = cleanTranscriptSpacing(state.currentTurn?.output || "");
   if (curIn || curOut) {
     allTurns.push({
       timestamp:
@@ -1239,11 +1262,13 @@ function renderObsStage() {
   for (const turn of allTurns) {
     const ts = turn.timestamp || "00:00:00";
     const { thai, english } = extractThaiAndEnglish(turn);
-    if (thai) {
-      thaiItems.push({ ts, text: thai });
+    const cleanTh = cleanTranscriptSpacing(thai);
+    const cleanEn = cleanTranscriptSpacing(english);
+    if (cleanTh) {
+      thaiItems.push({ ts, text: cleanTh });
     }
-    if (english) {
-      engItems.push({ ts, text: english });
+    if (cleanEn) {
+      engItems.push({ ts, text: cleanEn });
     }
   }
 
@@ -1252,7 +1277,6 @@ function renderObsStage() {
 
   renderObsLanguageLines(thaiListEl, visibleThai);
   renderObsLanguageLines(engListEl, visibleEng);
-  obsStage.scrollTop = obsStage.scrollHeight;
 }
 
 function renderObsLanguageLines(container, items) {
@@ -1283,6 +1307,16 @@ function renderObsLanguageLines(container, items) {
     row.appendChild(textNode);
     container.appendChild(row);
   });
+
+  // Hide any older top lines that would be partially clipped by the top edge of container,
+  // while always preserving the latest message at the bottom.
+  const children = Array.from(container.children);
+  const containerTop = container.offsetTop;
+  for (let i = 0; i < children.length - 1; i++) {
+    if (children[i].offsetTop < containerTop) {
+      children[i].style.visibility = "hidden";
+    }
+  }
 }
 
 function loadBrowserSessions() {
@@ -1946,16 +1980,35 @@ function exportCurrentSessionSrt() {
  * Restore the most recent live snapshot from `localStorage` so that opening OBS View (`?view=display`)
  * mid-session (including on static GitHub Pages) immediately displays all existing turns.
  */
+function sanitizeTurnsList(turns) {
+  if (!Array.isArray(turns)) return [];
+  const cleaned = [];
+  for (const t of turns) {
+    const input = cleanTranscriptSpacing(t?.input || "");
+    const output = cleanTranscriptSpacing(t?.output || "");
+    if (!input && !output) continue;
+    cleaned.push({ ...t, input, output });
+  }
+  return cleaned;
+}
+
 function restoreLiveSnapshotFromLocal() {
   try {
     const raw = localStorage.getItem(LIVE_SNAPSHOT_KEY);
     if (raw) {
       const snap = JSON.parse(raw);
+      if (snap?.activeModel) {
+        state.activeModel = snap.activeModel;
+      }
       if (snap && Array.isArray(snap.historyTurns)) {
-        state.historyTurns = snap.historyTurns;
+        state.historyTurns = sanitizeTurnsList(snap.historyTurns);
       }
       if (snap && snap.currentTurn && isDisplayMode) {
-        state.currentTurn = snap.currentTurn;
+        state.currentTurn = {
+          ...snap.currentTurn,
+          input: cleanTranscriptSpacing(snap.currentTurn.input || ""),
+          output: cleanTranscriptSpacing(snap.currentTurn.output || ""),
+        };
       }
       return;
     }
@@ -1964,7 +2017,7 @@ function restoreLiveSnapshotFromLocal() {
       String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))
     );
     if (sessions.length > 0 && Array.isArray(sessions[0].turns)) {
-      state.historyTurns = sessions[0].turns;
+      state.historyTurns = sanitizeTurnsList(sessions[0].turns);
     }
   } catch {
     // Ignore storage errors
@@ -2067,6 +2120,7 @@ function broadcastSnapshot() {
     running: state.running,
     micMuted: state.micMuted,
     silenceGated: state.silenceGated,
+    activeModel: state.activeModel || state.settings.model || DEFAULT_MODEL,
     fontScale: state.settings.fontScale,
     layoutMode: state.settings.layoutMode,
     obsMode: state.settings.obsMode,
@@ -2101,6 +2155,9 @@ function applyRemoteSnapshot(snapshot) {
   state.micMuted = !!snapshot.micMuted;
   state.silenceGated = !!snapshot.silenceGated;
 
+  if (snapshot.activeModel) {
+    state.activeModel = snapshot.activeModel;
+  }
   if (snapshot.fontScale) {
     state.settings.fontScale = snapshot.fontScale;
   }
@@ -2113,11 +2170,15 @@ function applyRemoteSnapshot(snapshot) {
   applyVisualSettings();
 
   if (Array.isArray(snapshot.historyTurns)) {
-    state.historyTurns = snapshot.historyTurns;
+    state.historyTurns = sanitizeTurnsList(snapshot.historyTurns);
     renderHistory();
   }
   if (snapshot.currentTurn) {
-    state.currentTurn = snapshot.currentTurn;
+    state.currentTurn = {
+      ...snapshot.currentTurn,
+      input: cleanTranscriptSpacing(snapshot.currentTurn.input || ""),
+      output: cleanTranscriptSpacing(snapshot.currentTurn.output || ""),
+    };
     renderCurrentTurn();
   }
   renderObsStage();

@@ -73,8 +73,10 @@ export function buildBidirectionalInstruction({
     `Interpret only the current utterance. Do not repeat, summarize, or prepend ` +
     `interpretations from previous turns. Each spoken segment must produce exactly ` +
     `one faithful translation in the opposite language and nothing else. ` +
-    `If an utterance is in a third language other than ${nameA} or ${nameB}, ` +
-    `translate it into ${nameB}. ` +
+    `STRICT LANGUAGE AND SCRIPT RULE: The speaker ONLY speaks Thai (ภาษาไทย) or English. ` +
+    `Never output Chinese characters (漢字/汉字), Japanese, Korean, or any other non-Thai/non-English scripts, ` +
+    `and never output placeholders like "<no speech detected>" or "[noise]". ` +
+    `If the audio is only background noise, a cough, or silence, stay completely silent and output nothing. ` +
     ECHO_GUARD +
     formatGlossarySection(glossary)
   );
@@ -122,13 +124,23 @@ export function detectLanguage(text = "") {
 }
 
 /**
- * Clean up spurious spaces that streaming speech-to-text tokenizers sometimes
- * insert between adjacent Thai characters while preserving legitimate spaces.
+ * Sanitize and clean transcript text:
+ * - Removes ASR noise placeholders such as `<no speech detected>`, `[noise]`, `[silence]`
+ * - Removes Chinese/CJK characters, Japanese, Korean, and exotic non-Thai/non-Latin scripts
+ * - Collapses spurious multiple spaces between Thai characters
  * @param {string} text
  */
 export function cleanTranscriptSpacing(text = "") {
   if (!text) return "";
-  return text.replace(/([ \t]+)(?=[\u0E00-\u0E7F])/g, (spaces, _g, offset, full) => {
+  let cleaned = String(text)
+    // Remove <no speech detected>, <noise>, [noise], [silence], etc.
+    .replace(/<\s*(?:no\s+speech\s+detected|noise|silence|inaudible|music|applause|laughter)[^>]*>/gi, "")
+    .replace(/\[\s*(?:no\s+speech\s+detected|noise|silence|inaudible|music|applause|laughter)[^\]]*\]/gi, "")
+    // Allow only standard ASCII/Latin, Thai script (\u0E00-\u0E7F), and standard typographic punctuation.
+    // This strips Chinese/CJK characters (哼。), Japanese, Korean, and exotic Unicode blocks (e.g. Bamum).
+    .replace(/[^\u0009\u000A\u000D\u0020-\u007E\u00A0-\u024F\u0E00-\u0E7F\u2000-\u206F\u20A0-\u20CF]/gu, "");
+
+  cleaned = cleaned.replace(/([ \t]+)(?=[\u0E00-\u0E7F])/g, (spaces, _g, offset, full) => {
     const prev = offset > 0 ? full[offset - 1] : "";
     // Keep normal spaces between words, collapse multiple spaces
     if (/[\u0E00-\u0E7F]/.test(prev) && spaces.length > 1) {
@@ -136,4 +148,11 @@ export function cleanTranscriptSpacing(text = "") {
     }
     return spaces;
   });
+
+  // If the remaining text has no Thai characters and no Latin letters/digits (e.g. only "." or spaces), return ""
+  if (!/[\u0E00-\u0E7FA-Za-z0-9]/.test(cleaned)) {
+    return "";
+  }
+
+  return cleaned;
 }
