@@ -1143,7 +1143,8 @@ function stopWebSpeechPreview() {
 function syncWebSpeechPreview() {
   stopWebSpeechPreview();
 
-  if (isDisplayMode || !state.running || state.micMuted) return;
+  // Prioritize Gemini Live API whenever an API key is active (only run Web Speech API in Browser AI fallback mode)
+  if (isDisplayMode || !state.running || state.micMuted || !state.browserAiMode) return;
   if (state.settings.audioSource === "__tab__") return;
 
   // Use the selected Speaker Language (defaults to Thai "th-TH"); never auto-switch on English jargon

@@ -63,9 +63,10 @@ export function buildBidirectionalInstruction({
     `RULE 2 (English -> Thai): Whenever the speaker speaks in ${nameB}, translate the entire utterance directly into natural, polite ${nameA}. ` +
     `RULE 3 (Strict Translation Only — Never Converse): NEVER reply to the speaker, NEVER acknowledge instructions (do not say "รับทราบค่ะ" or "ขออภัยค่ะ"), NEVER explain what language you are waiting for, and NEVER ask questions. Even if the speaker says "change language" or talks about translation, just translate their exact words into the other language. ` +
     `RULE 4 (Never Echo Same Language): Never repeat an utterance in the same language it was spoken in. Every Thai utterance MUST be output in English, and every English utterance MUST be output in Thai. ` +
-    `RULE 5 (Script & Noise Filter): The speaker ONLY speaks Thai (ภาษาไทย) or English. ` +
-    `Never output Chinese characters (漢字/汉字), Japanese, Korean, or any other non-Thai/non-English scripts, ` +
-    `and never output placeholders like "<no speech detected>" or "[noise]". ` +
+    `RULE 5 (Strict Thai & English Only — NO Spanish or Other Languages): The speaker ONLY speaks Thai (ภาษาไทย) or English. ` +
+    `NEVER output Spanish, French, Portuguese, German, Chinese (漢字/汉字), Japanese, Korean, or any other language besides Thai and English. ` +
+    `Even if an English or Thai word sounds similar to a Spanish word, ALWAYS interpret it as Thai or English and output ONLY Thai or English. ` +
+    `Never output placeholders like "<no speech detected>" or "[noise]". ` +
     `If the audio is only background noise, a cough, or silence, stay completely silent and output nothing. ` +
     ECHO_GUARD +
     formatGlossarySection(glossary)
@@ -126,9 +127,10 @@ export function cleanTranscriptSpacing(text = "") {
     // Remove <no speech detected>, <noise>, [noise], [silence], etc.
     .replace(/<\s*(?:no\s+speech\s+detected|noise|silence|inaudible|music|applause|laughter)[^>]*>/gi, "")
     .replace(/\[\s*(?:no\s+speech\s+detected|noise|silence|inaudible|music|applause|laughter)[^\]]*\]/gi, "")
-    // Allow only standard ASCII/Latin, Thai script (\u0E00-\u0E7F), and standard typographic punctuation.
-    // This strips Chinese/CJK characters (哼。), Japanese, Korean, and exotic Unicode blocks (e.g. Bamum).
-    .replace(/[^\u0009\u000A\u000D\u0020-\u007E\u00A0-\u024F\u0E00-\u0E7F\u2000-\u206F\u20A0-\u20CF]/gu, "");
+    // Allow ONLY standard unaccented ASCII/English (\u0020-\u007E), Thai script (\u0E00-\u0E7F),
+    // and standard typographic punctuation/currency (\u2000-\u206F, \u20A0-\u20CF).
+    // This strips Spanish/French accented Latin (\u00A0-\u024F, ¡, ¿, ñ, á, é, etc.), Chinese/CJK, and exotic Unicode.
+    .replace(/[^\u0009\u000A\u000D\u0020-\u007E\u0E00-\u0E7F\u2000-\u206F\u20A0-\u20CF]/gu, "");
 
   cleaned = cleaned.replace(/([ \t]+)(?=[\u0E00-\u0E7F])/g, (spaces, _g, offset, full) => {
     const prev = offset > 0 ? full[offset - 1] : "";
