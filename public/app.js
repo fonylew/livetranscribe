@@ -1143,8 +1143,7 @@ function stopWebSpeechPreview() {
 function syncWebSpeechPreview() {
   stopWebSpeechPreview();
 
-  // Prioritize Gemini Live API whenever an API key is active (only run Web Speech API in Browser AI fallback mode)
-  if (isDisplayMode || !state.running || state.micMuted || !state.browserAiMode) return;
+  if (isDisplayMode || !state.running || state.micMuted) return;
   if (state.settings.audioSource === "__tab__") return;
 
   // Use the selected Speaker Language (defaults to Thai "th-TH"); never auto-switch on English jargon
@@ -1165,7 +1164,8 @@ function syncWebSpeechPreview() {
 
     rec.onresult = async (event) => {
       if (!state.running || state.micMuted) return;
-      // When Gemini Live is active, only show local Web Speech preview before Gemini's official input arrives
+      // When Gemini Live is active, ONLY show Web Speech API as an instant streaming preview
+      // while speaking; the moment Gemini Live's input/output arrives, Gemini overwrites it.
       if (!state.browserAiMode && state.currentTurn.geminiInputStarted) return;
 
       let interimText = "";
@@ -1394,9 +1394,9 @@ function handleLiveEvent(ev) {
       }
     }
 
+    // Gemini Live sends incremental deltas in `inputTranscription.text` and `outputTranscription.text`
+    // (even when `finished: true` on the final chunk), whereas `interimInputTranscription` is a full-turn hypothesis.
     if (ev.interim) {
-      state.currentTurn[side] = cleanTranscriptSpacing(ev.text);
-    } else if (ev.finished) {
       state.currentTurn[side] = cleanTranscriptSpacing(ev.text);
     } else {
       state.currentTurn[side] = cleanTranscriptSpacing(
