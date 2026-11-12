@@ -47,6 +47,7 @@ export function formatGlossarySection(entries = []) {
 export function buildBidirectionalInstruction({
   langA = "th",
   langB = "en",
+  speakerLang = "th",
   glossary = [],
   eventContext = "",
 } = {}) {
@@ -56,13 +57,33 @@ export function buildBidirectionalInstruction({
     ? `Event context: ${eventContext.trim()}. `
     : "";
 
+  let languageRules = "";
+  if (speakerLang === "th") {
+    languageRules =
+      `MAIN SPEAKER LANGUAGE IS THAI (${nameA}): The speaker's main language for this entire session is ${nameA}, and they frequently use English technical jargon, software terms, product names, and acronyms (such as AI, Agent, CLI, Cloud Run, API, Kubernetes, etc.) inside their speech. ` +
+      `DO NOT switch the main language in the middle of the session when you hear English technical jargon or short English phrases. ` +
+      `Always respect and preserve English technical jargon as-is while translating the speaker's Thai speech into natural ${nameB}. ` +
+      `RULE 1 (Thai + Technical Jargon -> English): Translate the speaker's utterance into natural ${nameB}, keeping technical terms accurate. ` +
+      `RULE 2 (Full English Sentences -> Thai): Only if the speaker speaks a complete, multi-clause sentence entirely in conversational ${nameB} (not just technical jargon or short phrases), translate it into natural, polite ${nameA} while keeping English technical jargon in English. `;
+  } else if (speakerLang === "en") {
+    languageRules =
+      `MAIN SPEAKER LANGUAGE IS ENGLISH (${nameB}): The speaker's main language for this entire session is ${nameB}. ` +
+      `DO NOT switch the main language in the middle of the session. ` +
+      `Translate the speaker's ${nameB} speech directly into natural, polite ${nameA}, while preserving technical jargon, acronyms, and product names accurately. ` +
+      `RULE 1 (English -> Thai): Translate the speaker's utterance into natural, polite ${nameA}. ` +
+      `RULE 2 (Full Thai Sentences -> English): Only if the speaker speaks a complete sentence in ${nameA}, translate it into natural ${nameB}. `;
+  } else {
+    languageRules =
+      `RULE 1 (Thai -> English): Whenever the speaker speaks in ${nameA} (including Thai mixed with English technical jargon, acronyms, or product names), translate the entire utterance directly into natural ${nameB}. ` +
+      `RULE 2 (English -> Thai): Whenever the speaker speaks in ${nameB}, translate the entire utterance directly into natural, polite ${nameA}. `;
+  }
+
   return (
-    `You are a simultaneous bidirectional translator between ${nameA} and ${nameB}. ` +
+    `You are a simultaneous translator between ${nameA} and ${nameB}. ` +
     `${contextClause}` +
-    `RULE 1 (Thai -> English): Whenever the speaker speaks in ${nameA} (including Thai mixed with English technical jargon, acronyms, or product names), translate the entire utterance directly into natural ${nameB}. ` +
-    `RULE 2 (English -> Thai): Whenever the speaker speaks in ${nameB}, translate the entire utterance directly into natural, polite ${nameA}. ` +
-    `RULE 3 (Strict Translation Only — Never Converse): NEVER reply to the speaker, NEVER acknowledge instructions (do not say "รับทราบค่ะ" or "ขออภัยค่ะ"), NEVER explain what language you are waiting for, and NEVER ask questions. Even if the speaker says "change language" or talks about translation, just translate their exact words into the other language. ` +
-    `RULE 4 (Never Echo Same Language): Never repeat an utterance in the same language it was spoken in. Every Thai utterance MUST be output in English, and every English utterance MUST be output in Thai. ` +
+    `${languageRules}` +
+    `RULE 3 (Strict Translation Only — Never Converse): NEVER reply to the speaker, NEVER acknowledge instructions (do not say "รับทราบค่ะ" or "ขออภัยค่ะ"), NEVER explain what language you are waiting for, and NEVER ask questions. Even if the speaker says "change language" or talks about translation, just translate their exact words. ` +
+    `RULE 4 (Never Echo Same Language): Never repeat an utterance in the same language it was spoken in. ` +
     `RULE 5 (Strict Thai & English Only — NO Spanish or Other Languages): The speaker ONLY speaks Thai (ภาษาไทย) or English. ` +
     `NEVER output Spanish, French, Portuguese, German, Chinese (漢字/汉字), Japanese, Korean, or any other language besides Thai and English. ` +
     `Even if an English or Thai word sounds similar to a Spanish word, ALWAYS interpret it as Thai or English and output ONLY Thai or English. ` +
@@ -107,8 +128,8 @@ export function detectLanguage(text = "") {
   const thaiCount = (text.match(THAI_CHAR_RE) || []).length;
   const latinCount = (text.match(LATIN_CHAR_RE) || []).length;
   if (thaiCount === 0 && latinCount === 0) return "auto";
-  // If Thai script is present and represents at least 20% of alphabetic chars, classify as Thai
-  if (thaiCount > 0 && thaiCount >= latinCount * 0.25) {
+  // Any Thai script presence in the utterance means the sentence is Thai (with English technical jargon)
+  if (thaiCount > 0) {
     return "th";
   }
   return "en";

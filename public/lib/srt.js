@@ -32,6 +32,23 @@ export function formatSrtTimestamp(ms = 0) {
 export function extractThaiAndEnglish(turn = {}) {
   const input = String(turn.input || "").trim();
   const output = String(turn.output || "").trim();
+  const src = turn.sourceLang || "th";
+
+  // If sourceLang is explicitly "th" or "en", respect it directly so Thai sentences
+  // containing English technical jargon always stay on the Thai side.
+  if (src === "th") {
+    return {
+      thai: input,
+      english: output,
+    };
+  }
+  if (src === "en") {
+    return {
+      english: input,
+      thai: output,
+    };
+  }
+
   const inputHasThai = /[\u0E00-\u0E7F]/.test(input);
   const outputHasThai = /[\u0E00-\u0E7F]/.test(output);
 
@@ -42,13 +59,6 @@ export function extractThaiAndEnglish(turn = {}) {
     return { thai: output, english: input };
   }
 
-  const src = turn.sourceLang || "th";
-  if (src === "en") {
-    return {
-      english: input,
-      thai: output,
-    };
-  }
   return {
     thai: input,
     english: output,

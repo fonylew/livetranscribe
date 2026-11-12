@@ -1179,10 +1179,8 @@ function syncWebSpeechPreview() {
       const cleaned = cleanTranscriptSpacing(interimText);
       if (!cleaned) return;
 
-      // Detect if the speaker switched language (e.g. spoke English while set to Thai or vice versa)
-      const detectedLang = detectLanguage(cleaned);
-      const srcLang =
-        detectedLang === "th" || detectedLang === "en" ? detectedLang : activeRecLang;
+      // Keep the selected main speaker language throughout the session; never flip on English technical jargon
+      const srcLang = activeRecLang;
       const tgtLang = srcLang === "th" ? "en" : "th";
 
       if (!state.currentTurn.startedAt) {
@@ -1420,11 +1418,19 @@ function handleLiveEvent(ev) {
 }
 
 function updateDetectedLanguages(turn) {
+  const mainLang = state.settings.speakerLang || "th";
+
+  // If the user selected a main Speaker Language (TH or EN), keep it fixed for the session
+  // so English technical jargon inside a Thai talk never flips the turn's language tags.
+  if (mainLang === "th" || mainLang === "en") {
+    turn.sourceLang = mainLang;
+    turn.targetLang = mainLang === "th" ? "en" : "th";
+    return;
+  }
+
   const src = detectLanguage(turn.input);
   const tgt = detectLanguage(turn.output);
 
-  // Prioritize the target translation language from Gemini when available,
-  // because Thai speakers often use English technical jargon in `turn.input`.
   if (tgt !== "auto") {
     turn.targetLang = tgt;
     turn.sourceLang = tgt === "th" ? "en" : "th";
