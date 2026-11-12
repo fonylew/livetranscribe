@@ -483,8 +483,8 @@ test("live-session: buildSetup creates valid Gemini 3.8 Live setup with low-late
     disabled: false,
     startOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
     endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
-    prefixPaddingMs: 150,
-    silenceDurationMs: 700,
+    prefixPaddingMs: 200,
+    silenceDurationMs: 1000,
   });
   assert.match(
     setupFrame.setup.systemInstruction.parts[0].text,

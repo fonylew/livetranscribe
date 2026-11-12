@@ -38,8 +38,8 @@ const LIVE_SNAPSHOT_KEY = "livetranscribe_live_snapshot_v1";
 const HISTORY_LIMIT = 300;
 
 /** Noise floor & Smart Silence Gate constants */
-const SILENCE_FLOOR = 0.0025;
-const SILENCE_HOLD_MS = 2500; // Pause stream after 2.5s of silence
+const SILENCE_FLOOR = 0.0015;
+const SILENCE_HOLD_MS = 10000; // Only pause stream after 10s of dead silence so active talk is never chopped
 const PREROLL_MAX_FRAMES = 44; // ~350ms of 8ms worklet frames kept when silence-gated
 const MIC_DEAD_WARN_MS = 8000; // Warn if selected input has zero signal for first 8s
 
@@ -1162,15 +1162,17 @@ function syncWebSpeechPreview() {
     rec.maxAlternatives = 1;
     rec.lang = activeRecLang === "en" ? "en-US" : "th-TH";
 
+    state.speechRecTurnStartIdx = 0;
+    state.speechRecLastLen = 0;
+
     rec.onresult = async (event) => {
       if (!state.running || state.micMuted) return;
-      // When Gemini Live is active, ONLY show Web Speech API as an instant streaming preview
-      // while speaking; the moment Gemini Live's input/output arrives, Gemini overwrites it.
-      if (!state.browserAiMode && state.currentTurn.geminiInputStarted) return;
+      state.speechRecLastLen = event.results.length;
 
       let interimText = "";
       let hasFinalResult = false;
-      for (let i = event.resultIndex; i < event.results.length; i++) {
+      const startIdx = Math.max(event.resultIndex, state.speechRecTurnStartIdx || 0);
+      for (let i = startIdx; i < event.results.length; i++) {
         interimText += event.results[i][0]?.transcript || "";
         if (event.results[i].isFinal) {
           hasFinalResult = true;
@@ -1178,6 +1180,11 @@ function syncWebSpeechPreview() {
       }
       const cleaned = cleanTranscriptSpacing(interimText);
       if (!cleaned) return;
+
+      // Always record the latest Web Speech transcript as a fallback preview,
+      // and show it in the LIVE box until Gemini's authoritative transcript catches up.
+      state.currentTurn.previewInput = cleaned;
+      if (!state.browserAiMode && state.currentTurn.geminiInputStarted) return;
 
       // Keep the selected main speaker language throughout the session; never flip on English technical jargon
       const srcLang = activeRecLang;
@@ -1386,6 +1393,7 @@ function handleLiveEvent(ev) {
         state.currentTurn.input || state.currentTurn.previewInput || ""
       );
       state.currentTurn.input = accumulatedInput + " ";
+      state.currentTurn.rawInput = accumulatedInput + " ";
       state.currentTurn.carriedInput = accumulatedInput + " ";
       clearTimeout(state.turnIdleTimer);
       state.turnIdleTimer = setTimeout(async () => {
@@ -1423,24 +1431,30 @@ function handleLiveEvent(ev) {
     }
 
     const side = ev.type; // "input" or "output"
-    if (side === "input") {
-      if (!state.currentTurn.geminiInputStarted) {
-        // First real Gemini Live input chunk replaces any local Web Speech API preview
-        state.currentTurn.input = state.currentTurn.carriedInput || "";
-        state.currentTurn.geminiInputStarted = true;
-        state.currentTurn.isLocalPreview = false;
-      }
+    const rawKey = side === "input" ? "rawInput" : "rawOutput";
+    if (typeof state.currentTurn[rawKey] !== "string") {
+      state.currentTurn[rawKey] = side === "input" ? state.currentTurn.carriedInput || "" : "";
     }
 
     // Gemini Live sends incremental deltas in `inputTranscription.text` and `outputTranscription.text`
     // (even when `finished: true` on the final chunk), whereas `interimInputTranscription` is a full-turn hypothesis.
+    // Accumulate raw deltas first so space-only tokens (" ") are never stripped before the next word arrives.
     if (ev.interim) {
       const prefix = side === "input" ? state.currentTurn.carriedInput || "" : "";
-      state.currentTurn[side] = cleanTranscriptSpacing(prefix + ev.text);
+      state.currentTurn[rawKey] = prefix + ev.text;
     } else {
-      state.currentTurn[side] = cleanTranscriptSpacing(
-        state.currentTurn[side] + ev.text
-      );
+      state.currentTurn[rawKey] += ev.text;
+    }
+
+    const cleanedSide = cleanTranscriptSpacing(state.currentTurn[rawKey]);
+    if (side === "input") {
+      if (cleanedSide) {
+        state.currentTurn.geminiInputStarted = true;
+        state.currentTurn.isLocalPreview = false;
+        state.currentTurn.input = cleanedSide;
+      }
+    } else {
+      state.currentTurn.output = cleanedSide;
     }
 
     updateDetectedLanguages(state.currentTurn);
@@ -1568,8 +1582,11 @@ function finalizeCurrentTurn() {
 
   state.currentTurn = {
     input: "",
+    rawInput: "",
     previewInput: "",
+    carriedInput: "",
     output: "",
+    rawOutput: "",
     sourceLang: "auto",
     targetLang: "auto",
     startedAt: null,
@@ -1578,10 +1595,8 @@ function finalizeCurrentTurn() {
     isLocalPreview: false,
   };
 
-  // Restart local Web Speech recognition cleanly for the next utterance so buffer doesn't carry over
-  if (state.speechRec) {
-    syncWebSpeechPreview();
-  }
+  // Advance Web Speech API index without stopping/restarting the recognizer (avoids 800ms mic blind-spot)
+  state.speechRecTurnStartIdx = state.speechRecLastLen || 0;
 
   appendHistoryCard(completed);
   updateTurnCounter();

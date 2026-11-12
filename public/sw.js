@@ -1,4 +1,4 @@
-const CACHE_NAME = "livetranscribe-pwa-v18";
+const CACHE_NAME = "livetranscribe-pwa-v19";
 
 const CORE_ASSETS = [
   "./",
@@ -14,8 +14,8 @@ const CORE_ASSETS = [
   "./lib/session-loop.js",
   "./lib/srt.js",
   "./lib/usage.js",
-  "./audio/capture.worklet.js",
-  "./audio/playback.worklet.js",
+  "./audio/pcm-recorder-processor.js",
+  "./audio/pcm-player-processor.js",
 ];
 
 self.addEventListener("install", (event) => {

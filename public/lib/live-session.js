@@ -18,10 +18,10 @@ export const UPLINK_RATE = 16000;
 export const DOWNLINK_RATE = 24000;
 
 /**
- * Coalesce 128-sample (8 ms) AudioWorklet blocks into 32 ms frames (1024 bytes)
- * before base64 JSON wrapping.
+ * Coalesce 128-sample (8 ms) AudioWorklet blocks into 64 ms frames (2048 bytes, ~15.6 fps)
+ * before base64 JSON wrapping for smooth, low-jitter WebSocket audio streaming.
  */
-export const UPLINK_CHUNK_MS = 32;
+export const UPLINK_CHUNK_MS = 64;
 export const UPLINK_CHUNK_BYTES = Math.round((UPLINK_RATE * 2 * UPLINK_CHUNK_MS) / 1000);
 
 export const CANDIDATE_MODELS = [DEFAULT_MODEL, FALLBACK_MODEL];
@@ -88,8 +88,8 @@ export function buildSetup({
   speakerLang = "auto",
   glossary = [],
   eventContext = "",
-  silenceDurationMs = 700,
-  prefixPaddingMs = 150,
+  silenceDurationMs = 1000,
+  prefixPaddingMs = 200,
 } = {}) {
   const voiceName = resolveVoice(voice);
   return {
