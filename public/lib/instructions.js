@@ -47,7 +47,6 @@ export function formatGlossarySection(entries = []) {
 export function buildBidirectionalInstruction({
   langA = "th",
   langB = "en",
-  speakerLang = "auto",
   glossary = [],
   eventContext = "",
 } = {}) {
@@ -57,38 +56,14 @@ export function buildBidirectionalInstruction({
     ? `Event context: ${eventContext.trim()}. `
     : "";
 
-  let directionClause =
-    `When the speaker speaks in ${nameA}, interpret it directly into ${nameB}. ` +
-    `When the speaker speaks in ${nameB}, interpret it directly into ${nameA}. `;
-  if (speakerLang === "th") {
-    directionClause =
-      `The speaker is primarily speaking in ${nameA} (often mixing in English technical terms or names). ` +
-      `Interpret the spoken ${nameA} directly into natural ${nameB}. ` +
-      `(If a full sentence is spoken in ${nameB}, interpret it into ${nameA}.) `;
-  } else if (speakerLang === "en") {
-    directionClause =
-      `The speaker is primarily speaking in ${nameB}. ` +
-      `Interpret the spoken ${nameB} directly into natural, polite ${nameA}. ` +
-      `(If a full sentence is spoken in ${nameA}, interpret it into ${nameB}.) `;
-  }
-
   return (
-    `You are a professional real-time live event interpreter translating bidirectionally ` +
-    `between ${nameA} and ${nameB}. ` +
+    `You are a simultaneous bidirectional translator between ${nameA} and ${nameB}. ` +
     `${contextClause}` +
-    `${directionClause}` +
-    `Never restate an utterance in the language it was already spoken in. ` +
-    `If a Thai sentence contains English loanwords, product names, or technical terms, ` +
-    `judge by the primary language of the sentence as a whole (Thai) and translate the ` +
-    `entire sentence into natural ${nameB}. Conversely, if an English sentence contains ` +
-    `Thai names or terms, translate the sentence into natural, polite ${nameA}. ` +
-    `Speak only the interpretation itself in the speaker's register and tone — ` +
-    `no "the speaker says", no speaker labels, no commentary, and never answer a question ` +
-    `yourself. You are an interpreter, not a participant in the conversation. ` +
-    `Interpret only the current utterance. Do not repeat, summarize, or prepend ` +
-    `interpretations from previous turns. Each spoken segment must produce exactly ` +
-    `one faithful translation in the opposite language and nothing else. ` +
-    `STRICT LANGUAGE AND SCRIPT RULE: The speaker ONLY speaks Thai (ภาษาไทย) or English. ` +
+    `RULE 1 (Thai -> English): Whenever the speaker speaks in ${nameA} (including Thai mixed with English technical jargon, acronyms, or product names), translate the entire utterance directly into natural ${nameB}. ` +
+    `RULE 2 (English -> Thai): Whenever the speaker speaks in ${nameB}, translate the entire utterance directly into natural, polite ${nameA}. ` +
+    `RULE 3 (Strict Translation Only — Never Converse): NEVER reply to the speaker, NEVER acknowledge instructions (do not say "รับทราบค่ะ" or "ขออภัยค่ะ"), NEVER explain what language you are waiting for, and NEVER ask questions. Even if the speaker says "change language" or talks about translation, just translate their exact words into the other language. ` +
+    `RULE 4 (Never Echo Same Language): Never repeat an utterance in the same language it was spoken in. Every Thai utterance MUST be output in English, and every English utterance MUST be output in Thai. ` +
+    `RULE 5 (Script & Noise Filter): The speaker ONLY speaks Thai (ภาษาไทย) or English. ` +
     `Never output Chinese characters (漢字/汉字), Japanese, Korean, or any other non-Thai/non-English scripts, ` +
     `and never output placeholders like "<no speech detected>" or "[noise]". ` +
     `If the audio is only background noise, a cough, or silence, stay completely silent and output nothing. ` +

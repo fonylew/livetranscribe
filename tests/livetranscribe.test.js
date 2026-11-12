@@ -420,14 +420,9 @@ test("instructions: builds bidirectional Thai ⇄ English prompt with glossary &
 
   assert.match(instruction, /Thai \(ภาษาไทย\)/);
   assert.match(instruction, /English/);
-  assert.match(
-    instruction,
-    /When the speaker speaks in Thai \(ภาษาไทย\), interpret it directly into English/
-  );
-  assert.match(
-    instruction,
-    /When the speaker speaks in English, interpret it directly into Thai \(ภาษาไทย\)/
-  );
+  assert.match(instruction, /RULE 1 \(Thai -> English\)/);
+  assert.match(instruction, /RULE 2 \(English -> Thai\)/);
+  assert.match(instruction, /RULE 3 \(Strict Translation Only/);
   assert.match(instruction, /Cloud Native Summit Bangkok/);
   assert.match(instruction, /- กรุงเทพมหานคร → Bangkok/);
 });
@@ -493,7 +488,7 @@ test("live-session: buildSetup creates valid Gemini 3.8 Live setup with low-late
   });
   assert.match(
     setupFrame.setup.systemInstruction.parts[0].text,
-    /primarily speaking in Thai/
+    /RULE 2 \(English -> Thai\)/
   );
 
   const sentFrames = [];

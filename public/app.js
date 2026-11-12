@@ -1146,11 +1146,10 @@ function syncWebSpeechPreview() {
   if (isDisplayMode || !state.running || state.micMuted) return;
   if (state.settings.audioSource === "__tab__") return;
 
+  // Use the selected Speaker Language (defaults to Thai "th-TH"); never auto-switch on English jargon
   const speakerLang = state.settings.speakerLang || "th";
-  if (speakerLang === "th" || speakerLang === "en") {
-    state.speechRecLang = speakerLang;
-  }
-  const activeRecLang = state.speechRecLang === "en" ? "en" : "th";
+  const activeRecLang = speakerLang === "en" ? "en" : "th";
+  state.speechRecLang = activeRecLang;
 
   const SpeechRecognitionClass =
     window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1405,23 +1404,6 @@ function handleLiveEvent(ev) {
     }
 
     updateDetectedLanguages(state.currentTurn);
-
-    // If the speaker switches language mid-session (e.g. from Thai to English or vice versa),
-    // automatically switch the local Web Speech API recognition language (`th-TH` <-> `en-US`)
-    // and update the Speaker Language toggle to match.
-    const detectedSrc = state.currentTurn.sourceLang;
-    if (
-      (detectedSrc === "th" || detectedSrc === "en") &&
-      state.speechRecLang !== detectedSrc
-    ) {
-      state.speechRecLang = detectedSrc;
-      if (state.settings.speakerLang !== "auto") {
-        saveSettings({ speakerLang: detectedSrc });
-        applyVisualSettings();
-      }
-      syncWebSpeechPreview();
-    }
-
     renderCurrentTurn();
     renderObsStage();
     broadcastSnapshot();
@@ -1440,12 +1422,14 @@ function updateDetectedLanguages(turn) {
   const src = detectLanguage(turn.input);
   const tgt = detectLanguage(turn.output);
 
-  if (src !== "auto") {
-    turn.sourceLang = src;
-    turn.targetLang = src === "th" ? "en" : "th";
-  } else if (tgt !== "auto") {
+  // Prioritize the target translation language from Gemini when available,
+  // because Thai speakers often use English technical jargon in `turn.input`.
+  if (tgt !== "auto") {
     turn.targetLang = tgt;
     turn.sourceLang = tgt === "th" ? "en" : "th";
+  } else if (src !== "auto") {
+    turn.sourceLang = src;
+    turn.targetLang = src === "th" ? "en" : "th";
   }
 }
 
