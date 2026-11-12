@@ -46,7 +46,7 @@ const MIC_DEAD_WARN_MS = 8000; // Warn if selected input has zero signal for fir
 const DEFAULT_SETTINGS = {
   apiKey: "",
   model: DEFAULT_MODEL,
-  speakerLang: "auto", // "auto" | "th" | "en"
+  speakerLang: "th", // "auto" | "th" | "en" — defaults to Thai ("th")
   fontScale: 100,
   layoutMode: "side-by-side", // "side-by-side" | "stacked"
   obsMode: "auto", // "auto" | "horizontal" | "vertical"
@@ -119,6 +119,7 @@ const state = {
     isLocalPreview: false,
   },
   speechRec: null,
+  speechRecLang: "th", // Active Web Speech API language ("th" | "en"), auto-switches when speaker changes language
   turnIdleTimer: null,
   userScrolledUp: false,
 
@@ -360,7 +361,7 @@ function applyVisualSettings() {
   if (el("eventContextInput")) el("eventContextInput").value = state.settings.eventContext || "";
   if (el("glossaryInput")) el("glossaryInput").value = state.settings.glossaryText || "";
 
-  const currentSpeakerLang = state.settings.speakerLang || "auto";
+  const currentSpeakerLang = state.settings.speakerLang || "th";
   document.querySelectorAll("[data-speaker-lang]").forEach((btn) => {
     const active = btn.getAttribute("data-speaker-lang") === currentSpeakerLang;
     btn.classList.toggle("active", active);
@@ -399,8 +400,11 @@ function bindUI() {
 
   document.querySelectorAll("[data-speaker-lang]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const lang = btn.getAttribute("data-speaker-lang") || "auto";
+      const lang = btn.getAttribute("data-speaker-lang") || "th";
       saveSettings({ speakerLang: lang });
+      if (lang === "th" || lang === "en") {
+        state.speechRecLang = lang;
+      }
       applyVisualSettings();
       if (state.running) {
         if (state.sessionLoop) {
@@ -830,7 +834,7 @@ async function startSession() {
 
     const setup = buildSetup({
       model: state.activeModel,
-      speakerLang: state.settings.speakerLang || "auto",
+      speakerLang: state.settings.speakerLang || "th",
       glossary,
       eventContext: state.settings.eventContext,
     });
@@ -1044,9 +1048,13 @@ function syncWebSpeechPreview() {
   stopWebSpeechPreview();
 
   if (isDisplayMode || !state.running || state.micMuted) return;
-  const speakerLang = state.settings.speakerLang || "auto";
-  if (speakerLang !== "th" && speakerLang !== "en") return;
   if (state.settings.audioSource === "__tab__") return;
+
+  const speakerLang = state.settings.speakerLang || "th";
+  if (speakerLang === "th" || speakerLang === "en") {
+    state.speechRecLang = speakerLang;
+  }
+  const activeRecLang = state.speechRecLang === "en" ? "en" : "th";
 
   const SpeechRecognitionClass =
     window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1057,7 +1065,7 @@ function syncWebSpeechPreview() {
     rec.continuous = true;
     rec.interimResults = true;
     rec.maxAlternatives = 1;
-    rec.lang = speakerLang === "th" ? "th-TH" : "en-US";
+    rec.lang = activeRecLang === "en" ? "en-US" : "th-TH";
 
     rec.onresult = (event) => {
       if (!state.running || state.micMuted) return;
@@ -1082,8 +1090,8 @@ function syncWebSpeechPreview() {
 
       state.currentTurn.input = cleaned;
       state.currentTurn.isLocalPreview = true;
-      state.currentTurn.sourceLang = speakerLang;
-      state.currentTurn.targetLang = speakerLang === "th" ? "en" : "th";
+      state.currentTurn.sourceLang = activeRecLang;
+      state.currentTurn.targetLang = activeRecLang === "th" ? "en" : "th";
 
       renderCurrentTurn();
       renderObsStage();
@@ -1095,12 +1103,7 @@ function syncWebSpeechPreview() {
     };
 
     rec.onend = () => {
-      if (
-        state.speechRec === rec &&
-        state.running &&
-        !state.micMuted &&
-        (state.settings.speakerLang === "th" || state.settings.speakerLang === "en")
-      ) {
+      if (state.speechRec === rec && state.running && !state.micMuted) {
         try {
           rec.start();
         } catch {
@@ -1268,6 +1271,23 @@ function handleLiveEvent(ev) {
     }
 
     updateDetectedLanguages(state.currentTurn);
+
+    // If the speaker switches language mid-session (e.g. from Thai to English or vice versa),
+    // automatically switch the local Web Speech API recognition language (`th-TH` <-> `en-US`)
+    // and update the Speaker Language toggle to match.
+    const detectedSrc = state.currentTurn.sourceLang;
+    if (
+      (detectedSrc === "th" || detectedSrc === "en") &&
+      state.speechRecLang !== detectedSrc
+    ) {
+      state.speechRecLang = detectedSrc;
+      if (state.settings.speakerLang !== "auto") {
+        saveSettings({ speakerLang: detectedSrc });
+        applyVisualSettings();
+      }
+      syncWebSpeechPreview();
+    }
+
     renderCurrentTurn();
     renderObsStage();
     broadcastSnapshot();
@@ -2029,28 +2049,16 @@ function setStatus(cls, text) {
 }
 
 function showError(msg) {
-  const banner = el("errorBanner");
-  const text = el("errorBannerText");
-  if (text) text.textContent = msg;
-  if (banner) banner.hidden = false;
+  if (msg) {
+    setStatus("error", msg);
+  }
 }
 
-function hideError() {
-  const banner = el("errorBanner");
-  if (banner) banner.hidden = true;
-}
+function hideError() {}
 
-function showMicWarning(msg) {
-  const banner = el("micWarningBanner");
-  const text = el("micWarningText");
-  if (text) text.textContent = msg;
-  if (banner) banner.hidden = false;
-}
+function showMicWarning() {}
 
-function hideMicWarning() {
-  const banner = el("micWarningBanner");
-  if (banner) banner.hidden = true;
-}
+function hideMicWarning() {}
 
 function measurePeakAndMeter(samples) {
   let peak = 0;

@@ -17,7 +17,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css?v=10" />
+    <link rel="stylesheet" href="./styles.css?v=11" />
   </head>
   <body>
     <!-- Compact Persistent Control Bar (Hidden in ?view=display OBS Mode) -->
@@ -70,21 +70,21 @@
           id="speakerLangGroup"
           role="group"
           aria-label="Speaker Language (Auto, Thai, or English)"
-          title="Speaker Language: Auto (Gemini VAD only) or TH / EN (Instant Local Web Speech Preview + Gemini Live VAD)"
+          title="Speaker Language: Auto (Starts in Thai, auto-switches Web Speech API to English or Thai when speaker changes language), TH (Thai), or EN (English)"
         >
           <button
             type="button"
-            class="lang-mode-btn active"
+            class="lang-mode-btn"
             data-speaker-lang="auto"
-            aria-pressed="true"
+            aria-pressed="false"
           >
             Auto
           </button>
           <button
             type="button"
-            class="lang-mode-btn"
+            class="lang-mode-btn active"
             data-speaker-lang="th"
-            aria-pressed="false"
+            aria-pressed="true"
           >
             TH
           </button>
@@ -188,16 +188,6 @@
         </button>
       </div>
     </header>
-
-    <!-- Notification / Warning Banners -->
-    <div class="banner error" id="errorBanner" hidden>
-      <span id="errorBannerText"></span>
-      <button type="button" class="banner-close" id="closeErrorBtn" aria-label="Dismiss">×</button>
-    </div>
-
-    <div class="banner warn" id="micWarningBanner" hidden>
-      <span id="micWarningText"></span>
-    </div>
 
     <!-- Token Breakdown & API Cost Estimation Popover (Price is ONLY inside this popover, never on main screen) -->
     <section id="costPopover" class="popover-card" popover="auto" aria-label="Token &amp; API Cost Estimation">
@@ -500,6 +490,6 @@
       </section>
     </main>
 
-    <script type="module" src="./app.js?v=10"></script>
+    <script type="module" src="./app.js?v=11"></script>
   </body>
 </html>

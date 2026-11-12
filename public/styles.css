@@ -360,40 +360,8 @@ body {
   color: var(--text-muted);
 }
 
-/* ==========================================================================
-   Banners
-   ========================================================================== */
-
-.banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.55rem 1.25rem;
-  font-size: 0.84rem;
-  font-weight: 500;
-  flex-shrink: 0;
-}
-
-.banner.error {
-  background: var(--accent-red-bg);
-  color: var(--accent-red);
-  border-bottom: 1px solid var(--accent-red-border);
-}
-
-.banner.warn {
-  background: var(--accent-amber-bg);
-  color: var(--accent-amber);
-  border-bottom: 1px solid var(--accent-amber-border);
-}
-
-.banner-close {
-  background: none;
-  border: none;
-  font-size: 1.1rem;
-  color: inherit;
-  cursor: pointer;
-  padding: 0 0.25rem;
+[hidden] {
+  display: none !important;
 }
 
 /* ==========================================================================
