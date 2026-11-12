@@ -14,8 +14,8 @@
 export const AUDIO_TOKENS_PER_SECOND = 25;
 export const DEFAULT_USD_TO_THB = 34.5;
 
-export const DEFAULT_MODEL = "gemini-3.8-live";
-export const FALLBACK_MODEL = "gemini-3.1-flash-live-preview";
+export const DEFAULT_MODEL = "gemini-3.1-flash-live-preview";
+export const FALLBACK_MODEL = "gemini-3.8-live";
 export const SIMUL_MODEL = "gemini-3.5-live-translate-preview";
 
 /**

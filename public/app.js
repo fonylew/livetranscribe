@@ -46,6 +46,8 @@ const MIC_DEAD_WARN_MS = 8000; // Warn if selected input has zero signal for fir
 const DEFAULT_SETTINGS = {
   apiKey: "",
   model: DEFAULT_MODEL,
+  modelExplicitlySet: false,
+  engineMode: "gemini", // "gemini" | "webspeech"
   speakerLang: "th", // "auto" | "th" | "en" — defaults to Thai ("th")
   fontScale: 100,
   layoutMode: "side-by-side", // "side-by-side" | "stacked"
@@ -138,7 +140,12 @@ function loadSettings() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return { ...DEFAULT_SETTINGS };
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    const parsed = JSON.parse(raw);
+    const merged = { ...DEFAULT_SETTINGS, ...parsed };
+    if (!parsed.modelExplicitlySet) {
+      merged.model = DEFAULT_MODEL;
+    }
+    return merged;
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
@@ -364,6 +371,13 @@ function applyVisualSettings() {
   if (el("eventContextInput")) el("eventContextInput").value = state.settings.eventContext || "";
   if (el("glossaryInput")) el("glossaryInput").value = state.settings.glossaryText || "";
 
+  const currentEngineMode = state.settings.engineMode || "gemini";
+  document.querySelectorAll("[data-engine-mode]").forEach((btn) => {
+    const active = btn.getAttribute("data-engine-mode") === currentEngineMode;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-pressed", String(active));
+  });
+
   const currentSpeakerLang = state.settings.speakerLang || "th";
   document.querySelectorAll("[data-speaker-lang]").forEach((btn) => {
     const active = btn.getAttribute("data-speaker-lang") === currentSpeakerLang;
@@ -399,6 +413,24 @@ function bindUI() {
       await switchAudioSourceMidSession();
       syncWebSpeechPreview();
     }
+  });
+
+  document.querySelectorAll("[data-engine-mode]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const mode = btn.getAttribute("data-engine-mode") || "gemini";
+      saveSettings({ engineMode: mode });
+      applyVisualSettings();
+      if (state.running) {
+        await switchEngineModeMidSession(mode);
+      } else {
+        state.activeModel =
+          mode === "webspeech"
+            ? "web-speech + translate"
+            : state.settings.model || DEFAULT_MODEL;
+        renderObsStage();
+        broadcastSnapshot();
+      }
+    });
   });
 
   document.querySelectorAll("[data-speaker-lang]").forEach((btn) => {
@@ -475,7 +507,7 @@ function bindUI() {
   });
 
   el("modelSelect")?.addEventListener("change", (ev) => {
-    saveSettings({ model: ev.target.value });
+    saveSettings({ model: ev.target.value, modelExplicitlySet: true });
     state.activeModel = ev.target.value;
     renderUsageMetrics();
     renderObsStage();
@@ -799,18 +831,21 @@ async function startSession() {
   hideMicWarning();
 
   const apiKey = resolveEffectiveApiKey();
+  const wantWebSpeech = state.settings.engineMode === "webspeech";
   const startBtn = el("startStopBtn");
   if (startBtn) startBtn.disabled = true;
 
-  // Fallback to On-Device Browser AI Mode (Web Speech API + Browser Translation) when Gemini API Key is missing
-  if (!apiKey) {
+  // Use Web Speech API + Translate API when toggled to "webspeech" or when Gemini API Key is missing
+  if (wantWebSpeech || !apiKey) {
     try {
       await ensureAudioContexts();
       state.mediaStream = await acquireAudioStream();
       await populateAudioDevices(false);
 
       state.browserAiMode = true;
-      state.activeModel = "browser-ai (web-speech)";
+      state.activeModel = wantWebSpeech
+        ? "web-speech + translate"
+        : "browser-ai (no api key)";
       state.usage = emptyUsage();
       state.startedAt = performance.now();
       state.sessionId = createNewSessionId();
@@ -823,7 +858,10 @@ async function startSession() {
       state.running = true;
       syncWebSpeechPreview();
       startClockTimer();
-      setStatus("connected", "Browser AI (No API Key)");
+      setStatus(
+        "connected",
+        wantWebSpeech ? "Web Speech + Translate" : "Browser AI (No API Key)"
+      );
       renderControlState();
       renderUsageMetrics();
       renderObsStage();
@@ -1018,6 +1056,81 @@ function wireAudioStreamToSession(stream) {
       }
     };
   }
+}
+
+/**
+ * Switch between "Gemini Live" and "Web Speech + Translate" while a session is already running.
+ */
+async function switchEngineModeMidSession(mode) {
+  if (!state.running) return;
+
+  if (state.currentTurn.input.trim() || state.currentTurn.output.trim()) {
+    finalizeCurrentTurn();
+  }
+
+  const apiKey = resolveEffectiveApiKey();
+  if (mode === "webspeech" || !apiKey) {
+    state.sessionLoop?.close();
+    state.sessionLoop = null;
+    state.browserAiMode = true;
+    state.activeModel =
+      mode === "webspeech" ? "web-speech + translate" : "browser-ai (no api key)";
+    setStatus(
+      "connected",
+      mode === "webspeech" ? "Web Speech + Translate" : "Browser AI (No API Key)"
+    );
+    syncWebSpeechPreview();
+    renderControlState();
+    renderUsageMetrics();
+    renderObsStage();
+    broadcastSnapshot();
+    return;
+  }
+
+  // Switching to Gemini Live mid-session
+  state.browserAiMode = false;
+  const preferredModel = state.settings.model || DEFAULT_MODEL;
+  const models = [
+    preferredModel,
+    ...CANDIDATE_MODELS.filter((m) => m !== preferredModel),
+  ];
+  state.activeModel = models[0];
+
+  const glossary = parseGlossaryText(state.settings.glossaryText);
+  const setup = buildSetup({
+    model: state.activeModel,
+    speakerLang: state.settings.speakerLang || "th",
+    glossary,
+    eventContext: state.settings.eventContext,
+  });
+
+  if (!state.playerNode && state.ctxDown) {
+    state.playerNode = createPlayerNode(state.ctxDown);
+  }
+
+  state.sessionLoop?.close();
+  state.sessionLoop = new SessionLoop({
+    apiKey,
+    setup,
+    models,
+    onModel: (model) => {
+      state.activeModel = model;
+      renderUsageMetrics();
+      renderObsStage();
+    },
+    onStatus: (status, detail) => {
+      handleSessionStatus(status, detail);
+    },
+    onEvent: (ev) => {
+      handleLiveEvent(ev);
+    },
+  });
+  state.sessionLoop.start();
+  syncWebSpeechPreview();
+  renderControlState();
+  renderUsageMetrics();
+  renderObsStage();
+  broadcastSnapshot();
 }
 
 /**
@@ -2032,7 +2145,10 @@ function renderCurrentTurn() {
     } else if (state.micMuted) {
       hintEl.textContent = "Mic OFF · Paused";
     } else if (state.browserAiMode) {
-      hintEl.textContent = "⚠ Using Browser AI (No Gemini API Key)";
+      hintEl.textContent =
+        state.settings.engineMode === "webspeech"
+          ? "Web Speech API + Translate API"
+          : "⚠ Using Browser AI (No Gemini API Key)";
     } else if (state.silenceGated && !isLiveStreaming) {
       hintEl.textContent = "Silence Gate · Paused";
     } else if (isLiveStreaming) {
@@ -2171,8 +2287,11 @@ function renderControlState() {
       badge.className = "stream-badge paused";
       badge.textContent = "Mic Off · Stream Paused";
     } else if (state.browserAiMode) {
-      badge.className = "stream-badge paused";
-      badge.textContent = "⚠ Browser AI (No Gemini Key)";
+      badge.className = "stream-badge streaming";
+      badge.textContent =
+        state.settings.engineMode === "webspeech"
+          ? "Web Speech + Translate"
+          : "⚠ Browser AI (No Gemini Key)";
     } else if (state.silenceGated) {
       badge.className = "stream-badge paused";
       badge.textContent = "Silence Gate · Paused";
