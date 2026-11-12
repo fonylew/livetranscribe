@@ -478,12 +478,23 @@ test("usage: calculates tokens (for main screen) and API cost (for popover) + sa
   assert.equal(formatClock(125), "02:05");
 });
 
-test("live-session: buildSetup creates valid Gemini 3.8 Live setup and sends audioStreamEnd when mic is off", async () => {
-  const setupFrame = buildSetup({ model: "gemini-3.8-live" });
+test("live-session: buildSetup creates valid Gemini 3.8 Live setup with low-latency VAD and sends audioStreamEnd when mic is off", async () => {
+  const setupFrame = buildSetup({ model: "gemini-3.8-live", speakerLang: "th" });
   assert.equal(setupFrame.setup.model, "models/gemini-3.8-live");
   assert.deepEqual(setupFrame.setup.generationConfig.responseModalities, ["AUDIO"]);
   assert.deepEqual(setupFrame.setup.inputAudioTranscription, {});
   assert.deepEqual(setupFrame.setup.outputAudioTranscription, {});
+  assert.deepEqual(setupFrame.setup.realtimeInputConfig.automaticActivityDetection, {
+    disabled: false,
+    startOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
+    endOfSpeechSensitivity: "END_SENSITIVITY_HIGH",
+    prefixPaddingMs: 150,
+    silenceDurationMs: 350,
+  });
+  assert.match(
+    setupFrame.setup.systemInstruction.parts[0].text,
+    /primarily speaking in Thai/
+  );
 
   const sentFrames = [];
   class FakeWebSocket {

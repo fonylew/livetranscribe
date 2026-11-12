@@ -17,7 +17,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css?v=9" />
+    <link rel="stylesheet" href="./styles.css?v=10" />
   </head>
   <body>
     <!-- Compact Persistent Control Bar (Hidden in ?view=display OBS Mode) -->
@@ -63,6 +63,40 @@
 
         <!-- Stream Gating Status Badge -->
         <span class="stream-badge idle" id="streamStateBadge">Stream Idle</span>
+
+        <!-- 3-Way Speaker Language Toggle (Auto / TH / EN) -->
+        <div
+          class="speaker-lang-toggle"
+          id="speakerLangGroup"
+          role="group"
+          aria-label="Speaker Language (Auto, Thai, or English)"
+          title="Speaker Language: Auto (Gemini VAD only) or TH / EN (Instant Local Web Speech Preview + Gemini Live VAD)"
+        >
+          <button
+            type="button"
+            class="lang-mode-btn active"
+            data-speaker-lang="auto"
+            aria-pressed="true"
+          >
+            Auto
+          </button>
+          <button
+            type="button"
+            class="lang-mode-btn"
+            data-speaker-lang="th"
+            aria-pressed="false"
+          >
+            TH
+          </button>
+          <button
+            type="button"
+            class="lang-mode-btn"
+            data-speaker-lang="en"
+            aria-pressed="false"
+          >
+            EN
+          </button>
+        </div>
 
         <!-- Audio Source / Line-In Picker -->
         <div class="input-select-group">
@@ -466,6 +500,6 @@
       </section>
     </main>
 
-    <script type="module" src="./app.js?v=9"></script>
+    <script type="module" src="./app.js?v=10"></script>
   </body>
 </html>

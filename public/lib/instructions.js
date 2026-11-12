@@ -47,6 +47,7 @@ export function formatGlossarySection(entries = []) {
 export function buildBidirectionalInstruction({
   langA = "th",
   langB = "en",
+  speakerLang = "auto",
   glossary = [],
   eventContext = "",
 } = {}) {
@@ -56,12 +57,26 @@ export function buildBidirectionalInstruction({
     ? `Event context: ${eventContext.trim()}. `
     : "";
 
+  let directionClause =
+    `When the speaker speaks in ${nameA}, interpret it directly into ${nameB}. ` +
+    `When the speaker speaks in ${nameB}, interpret it directly into ${nameA}. `;
+  if (speakerLang === "th") {
+    directionClause =
+      `The speaker is primarily speaking in ${nameA} (often mixing in English technical terms or names). ` +
+      `Interpret the spoken ${nameA} directly into natural ${nameB}. ` +
+      `(If a full sentence is spoken in ${nameB}, interpret it into ${nameA}.) `;
+  } else if (speakerLang === "en") {
+    directionClause =
+      `The speaker is primarily speaking in ${nameB}. ` +
+      `Interpret the spoken ${nameB} directly into natural, polite ${nameA}. ` +
+      `(If a full sentence is spoken in ${nameA}, interpret it into ${nameB}.) `;
+  }
+
   return (
     `You are a professional real-time live event interpreter translating bidirectionally ` +
     `between ${nameA} and ${nameB}. ` +
     `${contextClause}` +
-    `When the speaker speaks in ${nameA}, interpret it directly into ${nameB}. ` +
-    `When the speaker speaks in ${nameB}, interpret it directly into ${nameA}. ` +
+    `${directionClause}` +
     `Never restate an utterance in the language it was already spoken in. ` +
     `If a Thai sentence contains English loanwords, product names, or technical terms, ` +
     `judge by the primary language of the sentence as a whole (Thai) and translate the ` +

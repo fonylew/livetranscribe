@@ -85,8 +85,11 @@ export function endpointUrl(apiKey) {
 export function buildSetup({
   model = DEFAULT_MODEL,
   voice = DEFAULT_VOICE,
+  speakerLang = "auto",
   glossary = [],
   eventContext = "",
+  silenceDurationMs = 350,
+  prefixPaddingMs = 150,
 } = {}) {
   const voiceName = resolveVoice(voice);
   return {
@@ -100,6 +103,15 @@ export function buildSetup({
           },
         },
       },
+      realtimeInputConfig: {
+        automaticActivityDetection: {
+          disabled: false,
+          startOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
+          endOfSpeechSensitivity: "END_SENSITIVITY_HIGH",
+          prefixPaddingMs,
+          silenceDurationMs,
+        },
+      },
       inputAudioTranscription: {},
       outputAudioTranscription: {},
       systemInstruction: {
@@ -108,6 +120,7 @@ export function buildSetup({
             text: buildBidirectionalInstruction({
               langA: "th",
               langB: "en",
+              speakerLang,
               glossary,
               eventContext,
             }),

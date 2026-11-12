@@ -46,6 +46,7 @@ const MIC_DEAD_WARN_MS = 8000; // Warn if selected input has zero signal for fir
 const DEFAULT_SETTINGS = {
   apiKey: "",
   model: DEFAULT_MODEL,
+  speakerLang: "auto", // "auto" | "th" | "en"
   fontScale: 100,
   layoutMode: "side-by-side", // "side-by-side" | "stacked"
   obsMode: "auto", // "auto" | "horizontal" | "vertical"
@@ -114,7 +115,10 @@ const state = {
     targetLang: "auto",
     startedAt: null,
     epochMs: null,
+    geminiInputStarted: false,
+    isLocalPreview: false,
   },
+  speechRec: null,
   turnIdleTimer: null,
   userScrolledUp: false,
 
@@ -355,6 +359,13 @@ function applyVisualSettings() {
   if (el("ttsAudioCheck")) el("ttsAudioCheck").checked = !!state.settings.ttsAudio;
   if (el("eventContextInput")) el("eventContextInput").value = state.settings.eventContext || "";
   if (el("glossaryInput")) el("glossaryInput").value = state.settings.glossaryText || "";
+
+  const currentSpeakerLang = state.settings.speakerLang || "auto";
+  document.querySelectorAll("[data-speaker-lang]").forEach((btn) => {
+    const active = btn.getAttribute("data-speaker-lang") === currentSpeakerLang;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-pressed", String(active));
+  });
 }
 
 function bindUI() {
@@ -382,7 +393,31 @@ function bindUI() {
     saveSettings({ audioSource: ev.target.value });
     if (state.running) {
       await switchAudioSourceMidSession();
+      syncWebSpeechPreview();
     }
+  });
+
+  document.querySelectorAll("[data-speaker-lang]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const lang = btn.getAttribute("data-speaker-lang") || "auto";
+      saveSettings({ speakerLang: lang });
+      applyVisualSettings();
+      if (state.running) {
+        if (state.sessionLoop) {
+          const glossary = parseGlossaryText(state.settings.glossaryText);
+          state.sessionLoop.setup = buildSetup({
+            model: state.activeModel || state.settings.model || DEFAULT_MODEL,
+            speakerLang: lang,
+            glossary,
+            eventContext: state.settings.eventContext,
+          });
+        }
+        syncWebSpeechPreview();
+      }
+      renderCurrentTurn();
+      renderObsStage();
+      broadcastSnapshot();
+    });
   });
 
   el("layoutToggleBtn")?.addEventListener("click", () => {
@@ -795,6 +830,7 @@ async function startSession() {
 
     const setup = buildSetup({
       model: state.activeModel,
+      speakerLang: state.settings.speakerLang || "auto",
       glossary,
       eventContext: state.settings.eventContext,
     });
@@ -822,6 +858,7 @@ async function startSession() {
     state.sessionLoop.start();
 
     state.running = true;
+    syncWebSpeechPreview();
     startClockTimer();
     renderControlState();
     renderUsageMetrics();
@@ -978,8 +1015,105 @@ function toggleMicMute(forceState) {
     state.silenceGated = false;
   }
 
+  syncWebSpeechPreview();
   renderControlState();
   broadcastSnapshot();
+}
+
+/**
+ * Local Web Speech API (`webkitSpeechRecognition` / `SpeechRecognition`) instant interim preview.
+ * - Active when `speakerLang` is `"th"` (`th-TH`) or `"en"` (`en-US`) and the default mic is active.
+ * - Shows instant streaming words in the latest turn (`isLocalPreview: true`) before Gemini Live
+ *   finishes transcribing, and is immediately replaced as soon as Gemini Live's `input` arrives.
+ */
+function stopWebSpeechPreview() {
+  if (!state.speechRec) return;
+  const rec = state.speechRec;
+  state.speechRec = null;
+  rec.onresult = null;
+  rec.onend = null;
+  rec.onerror = null;
+  try {
+    rec.stop();
+  } catch {
+    // Ignore
+  }
+}
+
+function syncWebSpeechPreview() {
+  stopWebSpeechPreview();
+
+  if (isDisplayMode || !state.running || state.micMuted) return;
+  const speakerLang = state.settings.speakerLang || "auto";
+  if (speakerLang !== "th" && speakerLang !== "en") return;
+  if (state.settings.audioSource === "__tab__") return;
+
+  const SpeechRecognitionClass =
+    window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognitionClass) return;
+
+  try {
+    const rec = new SpeechRecognitionClass();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
+    rec.lang = speakerLang === "th" ? "th-TH" : "en-US";
+
+    rec.onresult = (event) => {
+      if (!state.running || state.micMuted) return;
+      // Only show local Web Speech preview before Gemini's official inputTranscription arrives for this turn
+      if (state.currentTurn.geminiInputStarted) return;
+
+      let interimText = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        interimText += event.results[i][0]?.transcript || "";
+      }
+      const cleaned = cleanTranscriptSpacing(interimText);
+      if (!cleaned) return;
+
+      if (!state.currentTurn.startedAt) {
+        state.currentTurn.startedAt = new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        });
+        state.currentTurn.epochMs = Date.now();
+      }
+
+      state.currentTurn.input = cleaned;
+      state.currentTurn.isLocalPreview = true;
+      state.currentTurn.sourceLang = speakerLang;
+      state.currentTurn.targetLang = speakerLang === "th" ? "en" : "th";
+
+      renderCurrentTurn();
+      renderObsStage();
+      broadcastSnapshot();
+    };
+
+    rec.onerror = () => {
+      // Ignore transient no-speech / aborted errors
+    };
+
+    rec.onend = () => {
+      if (
+        state.speechRec === rec &&
+        state.running &&
+        !state.micMuted &&
+        (state.settings.speakerLang === "th" || state.settings.speakerLang === "en")
+      ) {
+        try {
+          rec.start();
+        } catch {
+          // Ignore restart race
+        }
+      }
+    };
+
+    state.speechRec = rec;
+    rec.start();
+  } catch {
+    // Ignore if browser blocks SpeechRecognition
+  }
 }
 
 /**
@@ -1013,6 +1147,7 @@ function watchOpeningMicSilence(stream) {
  * Stop the active session and release all media tracks and sockets.
  */
 async function stopSession({ preserveError = false } = {}) {
+  stopWebSpeechPreview();
   clearInterval(state.clockTimer);
   state.clockTimer = null;
   clearInterval(state.micWarnTimer);
@@ -1113,6 +1248,15 @@ function handleLiveEvent(ev) {
     }
 
     const side = ev.type; // "input" or "output"
+    if (side === "input") {
+      if (!state.currentTurn.geminiInputStarted) {
+        // First real Gemini Live input chunk replaces any local Web Speech API preview
+        state.currentTurn.input = "";
+        state.currentTurn.geminiInputStarted = true;
+        state.currentTurn.isLocalPreview = false;
+      }
+    }
+
     if (ev.interim) {
       state.currentTurn[side] = cleanTranscriptSpacing(ev.text);
     } else if (ev.finished) {
@@ -1165,6 +1309,8 @@ function finalizeCurrentTurn() {
       targetLang: "auto",
       startedAt: null,
       epochMs: null,
+      geminiInputStarted: false,
+      isLocalPreview: false,
     };
     renderCurrentTurn();
     renderObsStage();
@@ -1213,7 +1359,14 @@ function finalizeCurrentTurn() {
     targetLang: "auto",
     startedAt: null,
     epochMs: null,
+    geminiInputStarted: false,
+    isLocalPreview: false,
   };
+
+  // Restart local Web Speech recognition cleanly for the next utterance so buffer doesn't carry over
+  if (state.speechRec) {
+    syncWebSpeechPreview();
+  }
 
   appendHistoryCard(completed);
   updateTurnCounter();
@@ -1617,7 +1770,10 @@ function renderCurrentTurn() {
   const tgtTag = el("currentTargetLangTag");
   const hintEl = el("currentHint");
 
-  if (inputEl) inputEl.textContent = input;
+  if (inputEl) {
+    inputEl.textContent = input;
+    inputEl.classList.toggle("local-preview", Boolean(isLiveStreaming && state.currentTurn?.isLocalPreview));
+  }
   if (outputEl) outputEl.textContent = output;
   if (pulseEl) pulseEl.classList.toggle("active", state.running && !state.micMuted);
   if (statusLabelEl) {
