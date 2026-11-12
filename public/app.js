@@ -39,7 +39,7 @@ const HISTORY_LIMIT = 300;
 
 /** Noise floor & Smart Silence Gate constants */
 const SILENCE_FLOOR = 0.0025;
-const SILENCE_HOLD_MS = 1500; // Pause stream after 1.5s of silence
+const SILENCE_HOLD_MS = 2500; // Pause stream after 2.5s of silence
 const PREROLL_MAX_FRAMES = 44; // ~350ms of 8ms worklet frames kept when silence-gated
 const MIC_DEAD_WARN_MS = 8000; // Warn if selected input has zero signal for first 8s
 
@@ -1193,6 +1193,7 @@ function syncWebSpeechPreview() {
       }
 
       state.currentTurn.input = cleaned;
+      state.currentTurn.previewInput = cleaned;
       state.currentTurn.isLocalPreview = !state.browserAiMode;
       state.currentTurn.sourceLang = srcLang;
       state.currentTurn.targetLang = tgtLang;
@@ -1368,6 +1369,45 @@ function handleLiveEvent(ev) {
   }
 
   if (ev.type === "turnComplete") {
+    const hasInput = !!(state.currentTurn.input || state.currentTurn.previewInput || "").trim();
+    const hasOutput = !!state.currentTurn.output.trim();
+
+    // 1. If only Web Speech API preview is present and Gemini hasn't emitted output yet, wait.
+    if (!state.browserAiMode && state.currentTurn.isLocalPreview && !hasOutput) {
+      return;
+    }
+
+    // 2. If Gemini ended a turn early with input text but NO output translation yet
+    //    (e.g., speaker paused briefly mid-sentence or spoke technical terms),
+    //    keep the turn open in the Live panel so the next phrase's translation merges into this card.
+    //    If the speaker stays silent for 3.2s without further output, auto-translate so output is never "—".
+    if (!state.browserAiMode && hasInput && !hasOutput) {
+      const accumulatedInput = cleanTranscriptSpacing(
+        state.currentTurn.input || state.currentTurn.previewInput || ""
+      );
+      state.currentTurn.input = accumulatedInput + " ";
+      state.currentTurn.carriedInput = accumulatedInput + " ";
+      clearTimeout(state.turnIdleTimer);
+      state.turnIdleTimer = setTimeout(async () => {
+        const pendingIn = cleanTranscriptSpacing(
+          state.currentTurn.input || state.currentTurn.previewInput || ""
+        );
+        if (pendingIn && !state.currentTurn.output.trim()) {
+          updateDetectedLanguages(state.currentTurn);
+          const srcLang = state.currentTurn.sourceLang === "en" ? "en" : "th";
+          const tgtLang = srcLang === "th" ? "en" : "th";
+          const fallbackOut = await translateWithBrowserAi(pendingIn, srcLang, tgtLang);
+          if (fallbackOut && !state.currentTurn.output.trim()) {
+            state.currentTurn.output = fallbackOut;
+          }
+        }
+        if (state.currentTurn.input.trim() || state.currentTurn.output.trim()) {
+          finalizeCurrentTurn();
+        }
+      }, 3200);
+      return;
+    }
+
     finalizeCurrentTurn();
     return;
   }
@@ -1386,7 +1426,7 @@ function handleLiveEvent(ev) {
     if (side === "input") {
       if (!state.currentTurn.geminiInputStarted) {
         // First real Gemini Live input chunk replaces any local Web Speech API preview
-        state.currentTurn.input = "";
+        state.currentTurn.input = state.currentTurn.carriedInput || "";
         state.currentTurn.geminiInputStarted = true;
         state.currentTurn.isLocalPreview = false;
       }
@@ -1395,7 +1435,8 @@ function handleLiveEvent(ev) {
     // Gemini Live sends incremental deltas in `inputTranscription.text` and `outputTranscription.text`
     // (even when `finished: true` on the final chunk), whereas `interimInputTranscription` is a full-turn hypothesis.
     if (ev.interim) {
-      state.currentTurn[side] = cleanTranscriptSpacing(ev.text);
+      const prefix = side === "input" ? state.currentTurn.carriedInput || "" : "";
+      state.currentTurn[side] = cleanTranscriptSpacing(prefix + ev.text);
     } else {
       state.currentTurn[side] = cleanTranscriptSpacing(
         state.currentTurn[side] + ev.text
@@ -1444,11 +1485,14 @@ function finalizeCurrentTurn() {
   clearTimeout(state.turnIdleTimer);
   state.turnIdleTimer = null;
 
-  const input = cleanTranscriptSpacing(state.currentTurn.input);
+  const input = cleanTranscriptSpacing(
+    state.currentTurn.input || state.currentTurn.previewInput || ""
+  );
   const output = cleanTranscriptSpacing(state.currentTurn.output);
   if (!input && !output) {
     state.currentTurn = {
       input: "",
+      previewInput: "",
       output: "",
       sourceLang: "auto",
       targetLang: "auto",
@@ -1460,6 +1504,31 @@ function finalizeCurrentTurn() {
     renderCurrentTurn();
     renderObsStage();
     broadcastSnapshot();
+    return;
+  }
+
+  // If output arrived without input (`TH: —`) and the most recent history card had missing output (`EN: —`),
+  // merge this delayed translation directly into that card instead of creating two half-empty cards.
+  const prevTurn = state.historyTurns[state.historyTurns.length - 1];
+  if (!input && output && prevTurn && !prevTurn.output) {
+    prevTurn.output = output;
+    prevTurn.endEpochMs = Math.max(prevTurn.endEpochMs || 0, Date.now());
+    state.currentTurn = {
+      input: "",
+      previewInput: "",
+      output: "",
+      sourceLang: "auto",
+      targetLang: "auto",
+      startedAt: null,
+      epochMs: null,
+      geminiInputStarted: false,
+      isLocalPreview: false,
+    };
+    renderCurrentTurn();
+    renderHistory();
+    renderObsStage();
+    broadcastSnapshot();
+    persistCurrentSessionToServer();
     return;
   }
 
@@ -1499,6 +1568,7 @@ function finalizeCurrentTurn() {
 
   state.currentTurn = {
     input: "",
+    previewInput: "",
     output: "",
     sourceLang: "auto",
     targetLang: "auto",

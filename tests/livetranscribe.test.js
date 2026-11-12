@@ -482,9 +482,9 @@ test("live-session: buildSetup creates valid Gemini 3.8 Live setup with low-late
   assert.deepEqual(setupFrame.setup.realtimeInputConfig.automaticActivityDetection, {
     disabled: false,
     startOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
-    endOfSpeechSensitivity: "END_SENSITIVITY_HIGH",
+    endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
     prefixPaddingMs: 150,
-    silenceDurationMs: 350,
+    silenceDurationMs: 700,
   });
   assert.match(
     setupFrame.setup.systemInstruction.parts[0].text,
@@ -534,6 +534,15 @@ test("live-session: buildSetup creates valid Gemini 3.8 Live setup with low-late
   assert.deepEqual(sentFrames[2], {
     realtimeInput: { audioStreamEnd: true },
   });
+
+  // Simulate interrupted: true and generationComplete: true — neither should emit premature turnComplete
+  session._dispatch({
+    serverContent: {
+      interrupted: true,
+      generationComplete: true,
+    },
+  });
+  assert.equal(events.length, 0);
 
   // Simulate server sending Thai input transcription and English output translation
   session._dispatch({

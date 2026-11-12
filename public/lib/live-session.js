@@ -88,7 +88,7 @@ export function buildSetup({
   speakerLang = "auto",
   glossary = [],
   eventContext = "",
-  silenceDurationMs = 350,
+  silenceDurationMs = 700,
   prefixPaddingMs = 150,
 } = {}) {
   const voiceName = resolveVoice(voice);
@@ -107,7 +107,7 @@ export function buildSetup({
         automaticActivityDetection: {
           disabled: false,
           startOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
-          endOfSpeechSensitivity: "END_SENSITIVITY_HIGH",
+          endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
           prefixPaddingMs,
           silenceDurationMs,
         },
@@ -307,7 +307,7 @@ export class LiveSession {
       }
     }
 
-    if (content.turnComplete || content.generationComplete || content.interrupted) {
+    if (content.turnComplete) {
       this._onEvent({ type: "turnComplete" });
     }
   }
