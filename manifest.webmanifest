@@ -1,0 +1,45 @@
+{
+  "name": "LiveTranscribe — Thai ⇄ English Live Transcription",
+  "short_name": "LiveTranscribe",
+  "description": "Real-time bidirectional Thai ⇄ English event transcription and translation with OBS Studio view and .SRT export.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#2563eb",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Operator View",
+      "short_name": "Operator",
+      "description": "Open LiveTranscribe Operator Control Panel",
+      "url": "./"
+    },
+    {
+      "name": "OBS Display View",
+      "short_name": "OBS View",
+      "description": "Open Compact OBS Stage Display",
+      "url": "./?view=display"
+    }
+  ]
+}
