@@ -758,7 +758,6 @@ async function startSession() {
 
   const apiKey = resolveEffectiveApiKey();
   if (!apiKey) {
-    showError("Please enter your Gemini API Key in Settings (or set GEMINI_API_KEY in .env) before starting.");
     el("settingsPopover")?.showPopover?.();
     el("apiKeyInput")?.focus();
     return;
