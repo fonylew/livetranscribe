@@ -937,9 +937,13 @@ body.display-mode .obs-stage {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
-  gap: clamp(0.1rem, 0.6vh, 0.24rem);
-  overflow: hidden;
+  gap: clamp(0.12rem, 0.55vh, 0.24rem);
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.obs-lines > :first-child {
+  margin-top: auto;
 }
 
 .obs-line {

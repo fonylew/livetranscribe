@@ -1422,10 +1422,11 @@ function resolveObsLayoutMode() {
   if (settingMode === "horizontal" || settingMode === "vertical") {
     return settingMode;
   }
-  // Auto-detect based on viewport dimensions
+  // Auto-detect: only use compact horizontal subtitle mode when the window is a short subtitle bar (h <= 340)
+  // or ultra-wide banner (w / h >= 2.4). Standard desktop/browser windows use expanded history mode.
   const w = window.innerWidth || 1280;
   const h = window.innerHeight || 720;
-  if (h <= 450 || w / h >= 1.45) {
+  if (h <= 340 || w / h >= 2.4) {
     return "horizontal";
   }
   return "vertical";
@@ -1447,7 +1448,8 @@ function renderObsStage() {
   obsStage.classList.toggle("obs-horizontal", mode === "horizontal");
   obsStage.classList.toggle("obs-vertical", mode === "vertical");
 
-  const maxLinesPerLang = mode === "horizontal" ? 6 : 25;
+  // Allow up to 40 history turns per language; the layout & scroll/clipping will show as many as fit
+  const maxLinesPerLang = mode === "horizontal" ? 15 : 50;
 
   // Combine finalized history turns + current in-progress live turn (if any)
   const allTurns = [...state.historyTurns];
@@ -1521,15 +1523,9 @@ function renderObsLanguageLines(container, items) {
     container.appendChild(row);
   });
 
-  // Hide any older top lines that would be partially clipped by the top edge of container,
-  // while always preserving the latest message at the bottom.
-  const children = Array.from(container.children);
-  const containerTop = container.offsetTop;
-  for (let i = 0; i < children.length - 1; i++) {
-    if (children[i].offsetTop < containerTop) {
-      children[i].style.visibility = "hidden";
-    }
-  }
+  // Automatically scroll to the bottom so the latest message in bold is always prioritized and visible,
+  // while allowing all fitting history lines above it to be seen (and scrolled if opened in a window).
+  container.scrollTop = container.scrollHeight;
 }
 
 function loadBrowserSessions() {
