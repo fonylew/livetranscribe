@@ -118,8 +118,11 @@ const state = {
     geminiInputStarted: false,
     isLocalPreview: false,
   },
+  browserAiMode: false, // True when running without a Gemini API key (Web Speech API + On-Device/Browser Translation)
   speechRec: null,
   speechRecLang: "th", // Active Web Speech API language ("th" | "en"), auto-switches when speaker changes language
+  browserTranslators: {}, // Cache of Chrome On-Device Translator instances ("th->en", "en->th")
+  browserTranslateSeq: 0,
   turnIdleTimer: null,
   userScrolledUp: false,
 
@@ -796,14 +799,45 @@ async function startSession() {
   hideMicWarning();
 
   const apiKey = resolveEffectiveApiKey();
+  const startBtn = el("startStopBtn");
+  if (startBtn) startBtn.disabled = true;
+
+  // Fallback to On-Device Browser AI Mode (Web Speech API + Browser Translation) when Gemini API Key is missing
   if (!apiKey) {
-    el("settingsPopover")?.showPopover?.();
-    el("apiKeyInput")?.focus();
+    try {
+      await ensureAudioContexts();
+      state.mediaStream = await acquireAudioStream();
+      await populateAudioDevices(false);
+
+      state.browserAiMode = true;
+      state.activeModel = "browser-ai (web-speech)";
+      state.usage = emptyUsage();
+      state.startedAt = performance.now();
+      state.sessionId = createNewSessionId();
+      state.sessionStartEpochMs = Date.now();
+      state.silenceGated = false;
+      state.lastSoundAt = performance.now();
+      state.prerollFrames = [];
+
+      wireAudioStreamToSession(state.mediaStream);
+      state.running = true;
+      syncWebSpeechPreview();
+      startClockTimer();
+      setStatus("connected", "Browser AI (No API Key)");
+      renderControlState();
+      renderUsageMetrics();
+      renderObsStage();
+      broadcastSnapshot();
+    } catch (err) {
+      await stopSession({ preserveError: true });
+      showError(err?.message || String(err));
+    } finally {
+      if (startBtn) startBtn.disabled = false;
+    }
     return;
   }
 
-  const startBtn = el("startStopBtn");
-  if (startBtn) startBtn.disabled = true;
+  state.browserAiMode = false;
   setStatus("connecting", "Verifying API Key...");
 
   try {
@@ -946,8 +980,10 @@ function wireAudioStreamToSession(stream) {
     }
 
     // 3. Active speech: stream PCM16 to Gemini Live API and count input audio tokens
-    state.sessionLoop?.send(pcmBuffer);
-    noteAudioIn(state.usage, frameSeconds);
+    if (!state.browserAiMode) {
+      state.sessionLoop?.send(pcmBuffer);
+      noteAudioIn(state.usage, frameSeconds);
+    }
   };
 
   const sourceNode = state.ctxUp.createMediaStreamSource(stream);
@@ -1030,6 +1066,66 @@ function toggleMicMute(forceState) {
  * - Shows instant streaming words in the latest turn (`isLocalPreview: true`) before Gemini Live
  *   finishes transcribing, and is immediately replaced as soon as Gemini Live's `input` arrives.
  */
+/**
+ * Translate text in the browser when running in Browser AI Fallback Mode (no Gemini API key):
+ * 1. First tries Chrome's On-Device `window.Translator` / `window.translation` API (offline capable).
+ * 2. Falls back to the lightweight browser translation endpoint (`translate.googleapis.com/translate_a/single`).
+ */
+async function translateWithBrowserAi(text, sourceLang, targetLang) {
+  const clean = cleanTranscriptSpacing(text);
+  if (!clean) return "";
+
+  const pairKey = `${sourceLang}->${targetLang}`;
+
+  // 1. Try Chrome Built-in On-Device Translator API (`window.Translator` or `self.translation`)
+  try {
+    const TranslatorClass =
+      window.Translator || self.Translator || window.translation?.createTranslator;
+    if (TranslatorClass) {
+      if (!state.browserTranslators[pairKey]) {
+        if (typeof window.Translator?.create === "function") {
+          state.browserTranslators[pairKey] = await window.Translator.create({
+            sourceLanguage: sourceLang,
+            targetLanguage: targetLang,
+          });
+        } else if (typeof window.translation?.createTranslator === "function") {
+          state.browserTranslators[pairKey] = await window.translation.createTranslator({
+            sourceLanguage: sourceLang,
+            targetLanguage: targetLang,
+          });
+        }
+      }
+      const translator = state.browserTranslators[pairKey];
+      if (translator && typeof translator.translate === "function") {
+        const out = await translator.translate(clean);
+        if (out) return cleanTranscriptSpacing(out);
+      }
+    }
+  } catch {
+    // Fall through to browser fetch translation
+  }
+
+  // 2. Fallback to lightweight browser translation endpoint
+  try {
+    const url =
+      `https://translate.googleapis.com/translate_a/single?client=gtx` +
+      `&sl=${encodeURIComponent(sourceLang)}&tl=${encodeURIComponent(targetLang)}` +
+      `&dt=t&q=${encodeURIComponent(clean)}`;
+    const res = await fetch(url);
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data?.[0])) {
+        const joined = data[0].map((part) => part?.[0] || "").join("");
+        return cleanTranscriptSpacing(joined);
+      }
+    }
+  } catch {
+    // Ignore offline error
+  }
+
+  return "";
+}
+
 function stopWebSpeechPreview() {
   if (!state.speechRec) return;
   const rec = state.speechRec;
@@ -1067,17 +1163,27 @@ function syncWebSpeechPreview() {
     rec.maxAlternatives = 1;
     rec.lang = activeRecLang === "en" ? "en-US" : "th-TH";
 
-    rec.onresult = (event) => {
+    rec.onresult = async (event) => {
       if (!state.running || state.micMuted) return;
-      // Only show local Web Speech preview before Gemini's official inputTranscription arrives for this turn
-      if (state.currentTurn.geminiInputStarted) return;
+      // When Gemini Live is active, only show local Web Speech preview before Gemini's official input arrives
+      if (!state.browserAiMode && state.currentTurn.geminiInputStarted) return;
 
       let interimText = "";
+      let hasFinalResult = false;
       for (let i = event.resultIndex; i < event.results.length; i++) {
         interimText += event.results[i][0]?.transcript || "";
+        if (event.results[i].isFinal) {
+          hasFinalResult = true;
+        }
       }
       const cleaned = cleanTranscriptSpacing(interimText);
       if (!cleaned) return;
+
+      // Detect if the speaker switched language (e.g. spoke English while set to Thai or vice versa)
+      const detectedLang = detectLanguage(cleaned);
+      const srcLang =
+        detectedLang === "th" || detectedLang === "en" ? detectedLang : activeRecLang;
+      const tgtLang = srcLang === "th" ? "en" : "th";
 
       if (!state.currentTurn.startedAt) {
         state.currentTurn.startedAt = new Date().toLocaleTimeString([], {
@@ -1089,13 +1195,40 @@ function syncWebSpeechPreview() {
       }
 
       state.currentTurn.input = cleaned;
-      state.currentTurn.isLocalPreview = true;
-      state.currentTurn.sourceLang = activeRecLang;
-      state.currentTurn.targetLang = activeRecLang === "th" ? "en" : "th";
+      state.currentTurn.isLocalPreview = !state.browserAiMode;
+      state.currentTurn.sourceLang = srcLang;
+      state.currentTurn.targetLang = tgtLang;
 
       renderCurrentTurn();
       renderObsStage();
       broadcastSnapshot();
+
+      // In Browser AI Mode (no Gemini API key), also translate in the browser and commit finalized phrases
+      if (state.browserAiMode) {
+        const seq = ++state.browserTranslateSeq;
+        const translated = await translateWithBrowserAi(cleaned, srcLang, tgtLang);
+        if (seq === state.browserTranslateSeq && state.running && state.browserAiMode) {
+          state.currentTurn.output = translated;
+          renderCurrentTurn();
+          renderObsStage();
+          broadcastSnapshot();
+        }
+
+        clearTimeout(state.turnIdleTimer);
+        if (hasFinalResult) {
+          state.turnIdleTimer = setTimeout(() => {
+            if (state.running && state.browserAiMode && state.currentTurn.input.trim()) {
+              finalizeCurrentTurn();
+            }
+          }, 600);
+        } else {
+          state.turnIdleTimer = setTimeout(() => {
+            if (state.running && state.browserAiMode && state.currentTurn.input.trim()) {
+              finalizeCurrentTurn();
+            }
+          }, 2600);
+        }
+      }
     };
 
     rec.onerror = () => {
@@ -1186,6 +1319,7 @@ async function stopSession({ preserveError = false } = {}) {
   }
 
   state.running = false;
+  state.browserAiMode = false;
   state.silenceGated = false;
   state.prerollFrames = [];
   updateMeterUI(0);
@@ -1821,6 +1955,8 @@ function renderCurrentTurn() {
       hintEl.textContent = "Session idle";
     } else if (state.micMuted) {
       hintEl.textContent = "Mic OFF · Paused";
+    } else if (state.browserAiMode) {
+      hintEl.textContent = "⚠ Using Browser AI (No Gemini API Key)";
     } else if (state.silenceGated && !isLiveStreaming) {
       hintEl.textContent = "Silence Gate · Paused";
     } else if (isLiveStreaming) {
@@ -1958,6 +2094,9 @@ function renderControlState() {
     } else if (state.micMuted) {
       badge.className = "stream-badge paused";
       badge.textContent = "Mic Off · Stream Paused";
+    } else if (state.browserAiMode) {
+      badge.className = "stream-badge paused";
+      badge.textContent = "⚠ Browser AI (No Gemini Key)";
     } else if (state.silenceGated) {
       badge.className = "stream-badge paused";
       badge.textContent = "Silence Gate · Paused";
