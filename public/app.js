@@ -578,8 +578,12 @@ function bindUI() {
 
   el("demoTurnBtn")?.addEventListener("click", () => insertSampleTurn());
   el("clearHistoryBtn")?.addEventListener("click", () => clearHistory());
-  el("exportTranscriptBtn")?.addEventListener("click", () => exportTranscriptTxt());
-  el("exportSrtBtn")?.addEventListener("click", () => exportCurrentSessionSrt());
+  el("exportTranscriptBtn")?.addEventListener("click", () => exportCurrentSessionSrt("combined"));
+  el("exportSrtBtn")?.addEventListener("click", () => exportCurrentSessionSrt("combined"));
+  el("downloadTopSrtBtn")?.addEventListener("click", () => exportCurrentSessionSrt("combined"));
+  el("downloadHistorySrtBtn")?.addEventListener("click", () => exportCurrentSessionSrt("combined"));
+  el("downloadHistoryThSrtBtn")?.addEventListener("click", () => exportCurrentSessionSrt("th"));
+  el("downloadHistoryEnSrtBtn")?.addEventListener("click", () => exportCurrentSessionSrt("en"));
 
   // Past Sessions & .SRT Popover controls
   el("sessionsBtn")?.addEventListener("click", () => {
@@ -590,6 +594,32 @@ function bindUI() {
   });
   el("srtLangFilterSelect")?.addEventListener("change", () => {
     renderSelectedPastSessionDetail();
+  });
+  document.querySelectorAll("[data-srt-mode]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const mode = btn.getAttribute("data-srt-mode") || "combined";
+      state.selectedSrtMode = mode;
+      document.querySelectorAll("[data-srt-mode]").forEach((b) => {
+        b.classList.toggle("active", b.getAttribute("data-srt-mode") === mode);
+      });
+      renderSelectedPastSessionDetail();
+    });
+  });
+  el("loadSessionToStageBtn")?.addEventListener("click", () => {
+    const sess = state.selectedPastSession;
+    if (!sess || !Array.isArray(sess.turns)) return;
+    state.historyTurns = sanitizeTurnsList(sess.turns);
+    state.sessionId = sess.sessionId || createNewSessionId();
+    state.sessionStartEpochMs = sess.startEpochMs || sess.startedAtEpochMs || Date.now();
+    renderHistory();
+    renderCurrentTurn();
+    renderObsStage();
+    broadcastSnapshot();
+    try {
+      el("sessionsPopover")?.hidePopover?.();
+    } catch {
+      // Ignore
+    }
   });
   el("copySrtBtn")?.addEventListener("click", async () => {
     const preview = el("srtPreviewBox");
@@ -2243,7 +2273,7 @@ async function selectPastSession(sessionId) {
   }
 }
 
-let activeSrtBlobUrl = null;
+let activeSrtBlobUrls = [];
 
 function renderSelectedPastSessionDetail() {
   const emptyEl = el("sessionDetailEmpty");
@@ -2251,48 +2281,68 @@ function renderSelectedPastSessionDetail() {
   const titleEl = el("selectedSessionTitle");
   const metaEl = el("selectedSessionMeta");
   const previewEl = el("srtPreviewBox");
+  const actionsBar = el("srtActionsBar");
   const downloadBtn = el("downloadSrtLink");
+  const downloadCombinedBtn = el("downloadSrtCombinedBtn");
+  const downloadThBtn = el("downloadSrtThBtn");
+  const downloadEnBtn = el("downloadSrtEnBtn");
   const langSelect = el("srtLangFilterSelect");
 
   const sess = state.selectedPastSession;
   if (!sess) {
     if (emptyEl) emptyEl.hidden = false;
     if (contentEl) contentEl.hidden = true;
+    if (actionsBar) actionsBar.hidden = true;
     return;
   }
 
   if (emptyEl) emptyEl.hidden = true;
   if (contentEl) contentEl.hidden = false;
+  if (actionsBar) actionsBar.hidden = false;
 
-  const langMode = langSelect?.value || "combined";
+  const langMode = state.selectedSrtMode || langSelect?.value || "combined";
   if (titleEl) titleEl.textContent = sess.title || sess.sessionId;
   if (metaEl) {
     metaEl.textContent = `${sess.turnCount || (sess.turns || []).length} turns`;
   }
 
   const baseEpoch = sess.startEpochMs || sess.startedAtEpochMs;
+  const srtCombined =
+    sess.srtCombined || turnsToSrt(sess.turns || [], "combined", baseEpoch);
+  const srtTh =
+    sess.srtThai || sess.srtTh || turnsToSrt(sess.turns || [], "th", baseEpoch);
+  const srtEn =
+    sess.srtEnglish || sess.srtEn || turnsToSrt(sess.turns || [], "en", baseEpoch);
+
   const srtText =
-    langMode === "th"
-      ? sess.srtThai || sess.srtTh || turnsToSrt(sess.turns || [], "th", baseEpoch)
-      : langMode === "en"
-      ? sess.srtEnglish || sess.srtEn || turnsToSrt(sess.turns || [], "en", baseEpoch)
-      : sess.srtCombined || turnsToSrt(sess.turns || [], "combined", baseEpoch);
+    langMode === "th" ? srtTh : langMode === "en" ? srtEn : srtCombined;
 
   if (previewEl) {
     previewEl.textContent = srtText || "(Empty .srt)";
   }
 
-  if (downloadBtn) {
-    if (activeSrtBlobUrl) {
-      URL.revokeObjectURL(activeSrtBlobUrl);
-      activeSrtBlobUrl = null;
-    }
-    const blob = new Blob([srtText || ""], { type: "text/plain;charset=utf-8" });
-    activeSrtBlobUrl = URL.createObjectURL(blob);
-    downloadBtn.href = activeSrtBlobUrl;
-    const suffix = langMode === "combined" ? "" : `.${langMode}`;
-    downloadBtn.download = `${sess.sessionId}${suffix}.srt`;
+  for (const url of activeSrtBlobUrls) {
+    URL.revokeObjectURL(url);
   }
+  activeSrtBlobUrls = [];
+
+  const assignDownloadLink = (anchorEl, content, suffix) => {
+    if (!anchorEl) return;
+    const blob = new Blob([content || ""], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    activeSrtBlobUrls.push(url);
+    anchorEl.href = url;
+    anchorEl.download = `${sess.sessionId}${suffix}.srt`;
+  };
+
+  assignDownloadLink(
+    downloadBtn,
+    srtText,
+    langMode === "combined" ? "" : `.${langMode}`
+  );
+  assignDownloadLink(downloadCombinedBtn, srtCombined, "");
+  assignDownloadLink(downloadThBtn, srtTh, ".th");
+  assignDownloadLink(downloadEnBtn, srtEn, ".en");
 }
 
 /**
@@ -2713,19 +2763,67 @@ function exportTranscriptTxt() {
   URL.revokeObjectURL(url);
 }
 
-function exportCurrentSessionSrt() {
-  if (!state.historyTurns.length) return;
+function exportCurrentSessionSrt(langMode = "combined") {
+  const turns = [...state.historyTurns];
+  const curIn = cleanTranscriptSpacing(
+    state.currentTurn?.input || state.currentTurn?.previewInput || ""
+  );
+  const curOut = cleanTranscriptSpacing(state.currentTurn?.output || "");
+  if (curIn || curOut) {
+    const nowEpoch = Date.now();
+    const startEpoch = state.currentTurn?.epochMs || nowEpoch - 2000;
+    turns.push({
+      id: `live-${nowEpoch}`,
+      timestamp:
+        state.currentTurn?.startedAt ||
+        new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        }),
+      epochMs: startEpoch,
+      endEpochMs: Math.max(startEpoch + 1200, nowEpoch),
+      input: curIn,
+      output: curOut,
+      sourceLang:
+        state.currentTurn?.sourceLang === "auto"
+          ? state.settings.speakerLang || "th"
+          : state.currentTurn?.sourceLang || "th",
+      targetLang:
+        state.currentTurn?.targetLang === "auto"
+          ? (state.settings.speakerLang || "th") === "th"
+            ? "en"
+            : "th"
+          : state.currentTurn?.targetLang || "en",
+    });
+  }
+
+  if (!turns.length) {
+    // Fallback to most recent saved browser session if current history is empty
+    const saved = Object.values(loadBrowserSessions()).sort((a, b) =>
+      String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))
+    );
+    if (saved.length > 0 && Array.isArray(saved[0].turns) && saved[0].turns.length > 0) {
+      turns.push(...saved[0].turns);
+    }
+  }
+
+  if (!turns.length) return;
+
   const srt = turnsToSrt(
-    state.historyTurns,
-    "combined",
-    state.sessionStartEpochMs || state.historyTurns[0]?.epochMs || Date.now()
+    turns,
+    langMode,
+    state.sessionStartEpochMs || turns[0]?.epochMs || Date.now()
   );
   const blob = new Blob([srt], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  const fileBase = state.sessionId || `livetranscribe-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}`;
-  a.download = `${fileBase}.srt`;
+  const fileBase =
+    state.sessionId ||
+    `livetranscribe-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}`;
+  const suffix = langMode === "th" ? ".th" : langMode === "en" ? ".en" : "";
+  a.download = `${fileBase}${suffix}.srt`;
   a.click();
   URL.revokeObjectURL(url);
 }

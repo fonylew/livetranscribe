@@ -17,7 +17,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css?v=21" />
+    <link rel="stylesheet" href="./styles.css?v=22" />
   </head>
   <body>
     <!-- Compact Persistent Control Bar (Hidden in ?view=display OBS Mode) -->
@@ -166,6 +166,16 @@
           <span id="elapsedClock">00:00</span>
           <span class="pill-divider" aria-hidden="true">·</span>
           <strong id="mainTokenCount">0 tokens</strong>
+        </button>
+
+        <!-- Direct 1-Click Download Current Transcription as .SRT -->
+        <button
+          type="button"
+          class="btn btn-ghost"
+          id="downloadTopSrtBtn"
+          title="Download Current Transcription as .SRT Subtitle File"
+        >
+          ⬇ Download .SRT
         </button>
 
         <!-- Past Sessions & SRT Files Popover Trigger -->
@@ -440,6 +450,30 @@
             <button
               type="button"
               class="btn btn-ghost btn-xs"
+              id="downloadHistorySrtBtn"
+              title="Download Current Transcription as Combined .SRT (Thai + English)"
+            >
+              ⬇ .SRT (All)
+            </button>
+            <button
+              type="button"
+              class="btn btn-ghost btn-xs"
+              id="downloadHistoryThSrtBtn"
+              title="Download Thai-Only .SRT Subtitle File"
+            >
+              ⬇ .SRT (TH)
+            </button>
+            <button
+              type="button"
+              class="btn btn-ghost btn-xs"
+              id="downloadHistoryEnSrtBtn"
+              title="Download English-Only .SRT Subtitle File"
+            >
+              ⬇ .SRT (EN)
+            </button>
+            <button
+              type="button"
+              class="btn btn-ghost btn-xs"
               id="layoutToggleBtn"
               title="Switch between Side-by-Side and Stacked transcript view"
             >
@@ -516,6 +550,6 @@
       </section>
     </main>
 
-    <script type="module" src="./app.js?v=21"></script>
+    <script type="module" src="./app.js?v=22"></script>
   </body>
 </html>
