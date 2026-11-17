@@ -47,7 +47,8 @@ const DEFAULT_SETTINGS = {
   apiKey: "",
   model: DEFAULT_MODEL,
   modelExplicitlySet: false,
-  engineMode: "gemini", // "gemini" | "webspeech"
+  engineMode: "webspeech", // "webspeech" (Default) | "gemini"
+  engineModeExplicitlySet: false,
   speakerLang: "th", // "auto" | "th" | "en" — defaults to Thai ("th")
   fontScale: 100,
   layoutMode: "side-by-side", // "side-by-side" | "stacked"
@@ -70,7 +71,7 @@ const state = {
   running: false,
   micMuted: false,
   silenceGated: false,
-  activeModel: DEFAULT_MODEL,
+  activeModel: "web-speech + translate",
   status: "disconnected",
   statusDetail: "Idle",
 
@@ -120,9 +121,16 @@ const state = {
     geminiInputStarted: false,
     isLocalPreview: false,
   },
-  browserAiMode: false, // True when running without a Gemini API key (Web Speech API + On-Device/Browser Translation)
+  browserAiMode: false, // True when running Web Speech API + Translate API (or without a Gemini API key)
   speechRec: null,
-  speechRecLang: "th", // Active Web Speech API language ("th" | "en"), auto-switches when speaker changes language
+  speechRecLang: "th", // Active Web Speech API language ("th" | "en")
+  speechRecOpenedAt: 0,
+  lastSpeechActivityAt: 0,
+  speechRestartTimer: null,
+  keepAliveWatchdogTimer: null,
+  wakeLockSentinel: null,
+  keepAliveOsc: null,
+  lastMeterUpdateAt: 0,
   browserTranslators: {}, // Cache of Chrome On-Device Translator instances ("th->en", "en->th")
   browserTranslateSeq: 0,
   turnIdleTimer: null,
@@ -144,6 +152,9 @@ function loadSettings() {
     const merged = { ...DEFAULT_SETTINGS, ...parsed };
     if (!parsed.modelExplicitlySet) {
       merged.model = DEFAULT_MODEL;
+    }
+    if (!parsed.engineModeExplicitlySet) {
+      merged.engineMode = "webspeech";
     }
     return merged;
   } catch {
@@ -371,7 +382,7 @@ function applyVisualSettings() {
   if (el("eventContextInput")) el("eventContextInput").value = state.settings.eventContext || "";
   if (el("glossaryInput")) el("glossaryInput").value = state.settings.glossaryText || "";
 
-  const currentEngineMode = state.settings.engineMode || "gemini";
+  const currentEngineMode = state.settings.engineMode || "webspeech";
   document.querySelectorAll("[data-engine-mode]").forEach((btn) => {
     const active = btn.getAttribute("data-engine-mode") === currentEngineMode;
     btn.classList.toggle("active", active);
@@ -405,6 +416,20 @@ function bindUI() {
     }
   });
 
+  // When returning to the tab, immediately re-acquire Wake Lock and resume AudioContext / SpeechRecognition
+  document.addEventListener("visibilitychange", () => {
+    if (!state.running || isDisplayMode) return;
+    if (document.visibilityState === "visible") {
+      acquireWakeLock();
+      if (state.ctxUp?.state === "suspended") {
+        state.ctxUp.resume().catch(() => {});
+      }
+      if (!state.micMuted && !state.speechRec && !state.speechRestartTimer) {
+        scheduleWebSpeechRestart(50);
+      }
+    }
+  });
+
   el("refreshDevicesBtn")?.addEventListener("click", () => populateAudioDevices(true));
 
   el("audioSourceSelect")?.addEventListener("change", async (ev) => {
@@ -417,8 +442,8 @@ function bindUI() {
 
   document.querySelectorAll("[data-engine-mode]").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      const mode = btn.getAttribute("data-engine-mode") || "gemini";
-      saveSettings({ engineMode: mode });
+      const mode = btn.getAttribute("data-engine-mode") || "webspeech";
+      saveSettings({ engineMode: mode, engineModeExplicitlySet: true });
       applyVisualSettings();
       if (state.running) {
         await switchEngineModeMidSession(mode);
@@ -774,6 +799,125 @@ async function ensureAudioContexts() {
   }
   if (state.ctxUp.state === "suspended") await state.ctxUp.resume();
   if (state.ctxDown.state === "suspended") await state.ctxDown.resume();
+
+  // Inaudible keep-alive oscillator prevents Chrome from suspending or throttling
+  // the tab after 3 minutes of user inactivity or when switching windows to OBS/Slides.
+  if (!state.keepAliveOsc && state.ctxUp) {
+    try {
+      const osc = state.ctxUp.createOscillator();
+      const gain = state.ctxUp.createGain();
+      gain.gain.value = 0.00001; // Completely inaudible (-100 dB)
+      osc.frequency.value = 1;
+      osc.connect(gain);
+      gain.connect(state.ctxUp.destination);
+      osc.start();
+      state.keepAliveOsc = { osc, gain };
+    } catch {
+      // Ignore if oscillator creation is unsupported
+    }
+  }
+}
+
+/**
+ * Acquire Screen Wake Lock (`navigator.wakeLock.request('screen')`) so the laptop/tablet
+ * screen and browser never go to sleep after 3 minutes of no mouse/keyboard touch.
+ */
+async function acquireWakeLock() {
+  if (typeof navigator === "undefined" || !navigator.wakeLock?.request) return;
+  try {
+    if (state.wakeLockSentinel) return;
+    state.wakeLockSentinel = await navigator.wakeLock.request("screen");
+    state.wakeLockSentinel.addEventListener?.("release", () => {
+      state.wakeLockSentinel = null;
+    });
+  } catch {
+    // Ignore if wakeLock is blocked by browser battery policy
+  }
+}
+
+async function releaseWakeLock() {
+  if (!state.wakeLockSentinel) return;
+  try {
+    await state.wakeLockSentinel.release();
+  } catch {
+    // Ignore
+  }
+  state.wakeLockSentinel = null;
+}
+
+/**
+ * Active Keep-Alive Watchdog (runs every 3.5 seconds while session is active):
+ * 1. Re-acquires Screen Wake Lock if released and resumes AudioContext if suspended.
+ * 2. Recovers microphone stream if the OS/USB audio track ended unexpectedly.
+ * 3. Detects Chrome `webkitSpeechRecognition` stalls (e.g., after 3 minutes of silence or
+ *    continuous speech, or when the mic meter hears sound but SpeechRecognition emits nothing)
+ *    and transparently recycles the recognizer so the app never freezes.
+ */
+function startKeepAliveWatchdog() {
+  stopKeepAliveWatchdog();
+  state.keepAliveWatchdogTimer = setInterval(async () => {
+    if (!state.running || isDisplayMode) return;
+
+    // 1. Keep Screen Wake Lock & AudioContexts awake
+    if (!state.wakeLockSentinel && document.visibilityState === "visible") {
+      acquireWakeLock();
+    }
+    if (state.ctxUp?.state === "suspended") {
+      state.ctxUp.resume().catch(() => {});
+    }
+    if (state.ctxDown?.state === "suspended") {
+      state.ctxDown.resume().catch(() => {});
+    }
+
+    // 2. Check microphone track health
+    const track = state.mediaStream?.getAudioTracks?.()?.[0];
+    if (track && track.readyState === "ended" && state.settings.audioSource !== "__tab__") {
+      try {
+        await switchAudioSourceMidSession();
+      } catch {
+        // Ignore transient device recovery error
+      }
+    }
+
+    // 3. Keep Web Speech API alive & prevent 3-minute freeze
+    if (!state.micMuted && state.settings.audioSource !== "__tab__") {
+      const now = performance.now();
+      const sinceLastSound = now - (state.lastSoundAt || 0);
+      const sinceSpeechActivity = now - (state.lastSpeechActivityAt || 0);
+      const sinceRecOpened = now - (state.speechRecOpenedAt || 0);
+
+      // Case A: SpeechRecognition stopped and never restarted
+      if (!state.speechRec && !state.speechRestartTimer) {
+        scheduleWebSpeechRestart(50);
+        return;
+      }
+
+      // Case B: Microphone meter actively hears speech (< 3s ago), but SpeechRecognition
+      // hasn't fired any event for > 6 seconds (wedged recognizer)
+      if (sinceLastSound < 3000 && sinceSpeechActivity > 6000) {
+        scheduleWebSpeechRestart(50);
+        return;
+      }
+
+      // Case C: Proactive recycling before Chrome's ~3-minute (180s) SpeechRecognition timeout/freeze.
+      // When the recognizer has been open for > 120s (2 minutes) and the speaker is currently silent
+      // between sentences (> 1.2s of silence and no uncommitted text), recycle it cleanly.
+      if (
+        sinceRecOpened > 120000 &&
+        sinceLastSound > 1200 &&
+        !state.currentTurn.input.trim()
+      ) {
+        scheduleWebSpeechRestart(50);
+      }
+    }
+  }, 3500);
+}
+
+function stopKeepAliveWatchdog() {
+  if (state.keepAliveWatchdogTimer) {
+    clearInterval(state.keepAliveWatchdogTimer);
+    state.keepAliveWatchdogTimer = null;
+  }
 }
 
 function createPlayerNode(ctx) {
@@ -856,6 +1000,8 @@ async function startSession() {
 
       wireAudioStreamToSession(state.mediaStream);
       state.running = true;
+      acquireWakeLock();
+      startKeepAliveWatchdog();
       syncWebSpeechPreview();
       startClockTimer();
       setStatus(
@@ -934,6 +1080,8 @@ async function startSession() {
     state.sessionLoop.start();
 
     state.running = true;
+    acquireWakeLock();
+    startKeepAliveWatchdog();
     syncWebSpeechPreview();
     startClockTimer();
     renderControlState();
@@ -981,6 +1129,12 @@ function wireAudioStreamToSession(stream) {
     // 1. Manual Mic OFF: Drop frames immediately and count saved tokens/cost.
     if (state.micMuted) {
       noteAudioSaved(state.usage, frameSeconds);
+      return;
+    }
+
+    // In Web Speech + Translate mode (browserAiMode), we only need the audio level & activity timestamp
+    // above — skip allocating PCM16 buffers and preroll queues so the main thread never stalls over long sessions.
+    if (state.browserAiMode) {
       return;
     }
 
@@ -1218,13 +1372,16 @@ async function translateWithBrowserAi(text, sourceLang, targetLang) {
     // Fall through to browser fetch translation
   }
 
-  // 2. Fallback to lightweight browser translation endpoint
+  // 2. Fallback to lightweight browser translation endpoint (with 4s timeout so stalled requests never hang)
   try {
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timeoutId = controller ? setTimeout(() => controller.abort(), 4000) : null;
     const url =
       `https://translate.googleapis.com/translate_a/single?client=gtx` +
       `&sl=${encodeURIComponent(sourceLang)}&tl=${encodeURIComponent(targetLang)}` +
       `&dt=t&q=${encodeURIComponent(clean)}`;
-    const res = await fetch(url);
+    const res = await fetch(url, controller ? { signal: controller.signal } : undefined);
+    if (timeoutId) clearTimeout(timeoutId);
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data?.[0])) {
@@ -1233,16 +1390,23 @@ async function translateWithBrowserAi(text, sourceLang, targetLang) {
       }
     }
   } catch {
-    // Ignore offline error
+    // Ignore offline / timeout error
   }
 
   return "";
 }
 
 function stopWebSpeechPreview() {
+  if (state.speechRestartTimer) {
+    clearTimeout(state.speechRestartTimer);
+    state.speechRestartTimer = null;
+  }
   if (!state.speechRec) return;
   const rec = state.speechRec;
   state.speechRec = null;
+  rec.onstart = null;
+  rec.onaudiostart = null;
+  rec.onsoundstart = null;
   rec.onresult = null;
   rec.onend = null;
   rec.onerror = null;
@@ -1251,6 +1415,18 @@ function stopWebSpeechPreview() {
   } catch {
     // Ignore
   }
+}
+
+function scheduleWebSpeechRestart(delayMs = 120) {
+  if (state.speechRestartTimer) {
+    clearTimeout(state.speechRestartTimer);
+  }
+  state.speechRestartTimer = setTimeout(() => {
+    state.speechRestartTimer = null;
+    if (state.running && !state.micMuted && !isDisplayMode) {
+      syncWebSpeechPreview();
+    }
+  }, delayMs);
 }
 
 function syncWebSpeechPreview() {
@@ -1277,10 +1453,36 @@ function syncWebSpeechPreview() {
 
     state.speechRecTurnStartIdx = 0;
     state.speechRecLastLen = 0;
+    state.speechRecOpenedAt = performance.now();
+    state.lastSpeechActivityAt = performance.now();
+
+    rec.onstart = () => {
+      state.speechRecTurnStartIdx = 0;
+      state.speechRecLastLen = 0;
+      state.speechRecOpenedAt = performance.now();
+      state.lastSpeechActivityAt = performance.now();
+    };
+
+    rec.onaudiostart = () => {
+      state.lastSpeechActivityAt = performance.now();
+    };
+
+    rec.onsoundstart = () => {
+      state.lastSpeechActivityAt = performance.now();
+    };
 
     rec.onresult = async (event) => {
       if (!state.running || state.micMuted) return;
+      state.lastSpeechActivityAt = performance.now();
       state.speechRecLastLen = event.results.length;
+
+      // Guard against SpeechRecognition session resets where event.results restarts at 0
+      if (
+        event.resultIndex < (state.speechRecTurnStartIdx || 0) ||
+        event.results.length <= (state.speechRecTurnStartIdx || 0)
+      ) {
+        state.speechRecTurnStartIdx = event.resultIndex;
+      }
 
       let interimText = "";
       let hasFinalResult = false;
@@ -1322,7 +1524,7 @@ function syncWebSpeechPreview() {
       renderObsStage();
       broadcastSnapshot();
 
-      // In Browser AI Mode (no Gemini API key), also translate in the browser and commit finalized phrases
+      // In Web Speech + Translate Mode (browserAiMode), translate in the browser and commit finalized phrases
       if (state.browserAiMode) {
         const seq = ++state.browserTranslateSeq;
         const translated = await translateWithBrowserAi(cleaned, srcLang, tgtLang);
@@ -1350,24 +1552,32 @@ function syncWebSpeechPreview() {
       }
     };
 
-    rec.onerror = () => {
-      // Ignore transient no-speech / aborted errors
+    rec.onerror = (ev) => {
+      // If permission was explicitly denied, do not loop
+      if (ev?.error === "not-allowed" || ev?.error === "service-not-allowed") {
+        return;
+      }
+      // For network / no-speech / audio-capture / aborted glitches, schedule a fresh restart
+      if (state.speechRec === rec && state.running && !state.micMuted) {
+        scheduleWebSpeechRestart(250);
+      }
     };
 
     rec.onend = () => {
+      // Always create a fresh SpeechRecognition instance on end so speechRecTurnStartIdx
+      // resets to 0 and Chrome never freezes after 3 minutes of inactivity or continuous speech.
       if (state.speechRec === rec && state.running && !state.micMuted) {
-        try {
-          rec.start();
-        } catch {
-          // Ignore restart race
-        }
+        scheduleWebSpeechRestart(100);
       }
     };
 
     state.speechRec = rec;
     rec.start();
   } catch {
-    // Ignore if browser blocks SpeechRecognition
+    // Retry if browser temporarily rejected start()
+    if (state.running && !state.micMuted) {
+      scheduleWebSpeechRestart(500);
+    }
   }
 }
 
@@ -1403,6 +1613,8 @@ function watchOpeningMicSilence(stream) {
  */
 async function stopSession({ preserveError = false } = {}) {
   stopWebSpeechPreview();
+  stopKeepAliveWatchdog();
+  releaseWakeLock();
   clearInterval(state.clockTimer);
   state.clockTimer = null;
   clearInterval(state.micWarnTimer);
@@ -1708,8 +1920,12 @@ function finalizeCurrentTurn() {
     isLocalPreview: false,
   };
 
-  // Advance Web Speech API index without stopping/restarting the recognizer (avoids 800ms mic blind-spot)
+  // Advance Web Speech API index without stopping/restarting the recognizer on every turn,
+  // and recycle cleanly after 25 accumulated results so Chrome's internal buffer never bloats.
   state.speechRecTurnStartIdx = state.speechRecLastLen || 0;
+  if ((state.speechRecLastLen || 0) >= 25 && state.running && !state.micMuted) {
+    scheduleWebSpeechRestart(40);
+  }
 
   appendHistoryCard(completed);
   updateTurnCounter();
@@ -2397,8 +2613,12 @@ function measurePeakAndMeter(samples) {
     if (abs > peak) peak = abs;
   }
   state.smoothedLevel = state.smoothedLevel * 0.7 + peak * 0.3;
-  const pct = Math.min(100, Math.round(Math.sqrt(state.smoothedLevel) * 180));
-  updateMeterUI(state.micMuted ? 0 : pct);
+  const now = performance.now();
+  if (now - (state.lastMeterUpdateAt || 0) >= 50) {
+    state.lastMeterUpdateAt = now;
+    const pct = Math.min(100, Math.round(Math.sqrt(state.smoothedLevel) * 180));
+    updateMeterUI(state.micMuted ? 0 : pct);
+  }
   return peak;
 }
 

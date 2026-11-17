@@ -17,7 +17,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css?v=20" />
+    <link rel="stylesheet" href="./styles.css?v=21" />
   </head>
   <body>
     <!-- Compact Persistent Control Bar (Hidden in ?view=display OBS Mode) -->
@@ -64,29 +64,29 @@
         <!-- Stream Gating Status Badge -->
         <span class="stream-badge idle" id="streamStateBadge">Stream Idle</span>
 
-        <!-- Engine Mode Toggle (Gemini Live vs Web Speech + Translate API) -->
+        <!-- Engine Mode Toggle (Web Speech + Translate Default vs Gemini Live API) -->
         <div
           class="speaker-lang-toggle engine-mode-toggle"
           id="engineModeGroup"
           role="group"
           aria-label="Transcription &amp; Translation Engine"
-          title="Switch between Gemini 3.1 Live API and Browser Web Speech API + Translate API"
+          title="Switch between Browser Web Speech API + Translate API (Default) and Gemini 3.1 Live API"
         >
           <button
             type="button"
             class="lang-mode-btn active"
-            data-engine-mode="gemini"
+            data-engine-mode="webspeech"
             aria-pressed="true"
           >
-            Gemini Live
+            Web Speech + Translate
           </button>
           <button
             type="button"
             class="lang-mode-btn"
-            data-engine-mode="webspeech"
+            data-engine-mode="gemini"
             aria-pressed="false"
           >
-            Web Speech + Translate
+            Gemini Live
           </button>
         </div>
 
@@ -501,7 +501,7 @@
               (ts.) **[latest in bold]**
          ====================================================================== -->
     <main class="obs-stage" id="obsStage" aria-live="polite">
-      <div class="obs-powered-by" id="obsPoweredBy">powered by gemini-3.1-flash-live-preview</div>
+      <div class="obs-powered-by" id="obsPoweredBy">powered by web-speech + translate</div>
 
       <section class="obs-lang-block" id="obsThaiBlock">
         <div class="obs-lang-header">Thai</div>
@@ -516,6 +516,6 @@
       </section>
     </main>
 
-    <script type="module" src="./app.js?v=20"></script>
+    <script type="module" src="./app.js?v=21"></script>
   </body>
 </html>
