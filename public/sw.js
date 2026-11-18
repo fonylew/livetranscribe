@@ -1,4 +1,4 @@
-const CACHE_NAME = "livetranscribe-pwa-v22";
+const CACHE_NAME = "livetranscribe-pwa-v23";
 
 const CORE_ASSETS = [
   "./",

@@ -43,13 +43,16 @@ const SILENCE_HOLD_MS = 10000; // Only pause stream after 10s of dead silence so
 const PREROLL_MAX_FRAMES = 44; // ~350ms of 8ms worklet frames kept when silence-gated
 const MIC_DEAD_WARN_MS = 8000; // Warn if selected input has zero signal for first 8s
 
+const ALL_OUTPUT_LANGS = ["th", "en", "zh"];
+
 const DEFAULT_SETTINGS = {
   apiKey: "",
   model: DEFAULT_MODEL,
   modelExplicitlySet: false,
   engineMode: "webspeech", // "webspeech" (Default) | "gemini"
   engineModeExplicitlySet: false,
-  speakerLang: "th", // "auto" | "th" | "en" — defaults to Thai ("th")
+  speakerLang: "th", // "auto" | "th" | "en" | "zh" — defaults to Thai ("th")
+  outputLangs: ["th", "en", "zh"], // 1, 2, or 3 output languages ("th", "en", "zh")
   fontScale: 100,
   layoutMode: "side-by-side", // "side-by-side" | "stacked"
   obsMode: "auto", // "auto" | "horizontal" | "vertical"
@@ -60,6 +63,20 @@ const DEFAULT_SETTINGS = {
   eventContext: "",
   glossaryText: "",
 };
+
+function getSelectedOutputLangs() {
+  const raw = state?.settings?.outputLangs;
+  if (!Array.isArray(raw) || raw.length === 0) return ["th", "en", "zh"];
+  const valid = ALL_OUTPUT_LANGS.filter((l) => raw.includes(l));
+  return valid.length > 0 ? valid : ["th", "en", "zh"];
+}
+
+function resolvePrimaryTargetLang(srcLang = "th") {
+  const selected = getSelectedOutputLangs();
+  const other = selected.find((l) => l !== srcLang);
+  if (other) return other;
+  return srcLang === "th" ? "en" : "th";
+}
 
 const params = new URLSearchParams(window.location.search);
 const isDisplayMode = params.get("view") === "display" || params.get("obs") === "1";
@@ -395,6 +412,19 @@ function applyVisualSettings() {
     btn.classList.toggle("active", active);
     btn.setAttribute("aria-pressed", String(active));
   });
+
+  const selectedOutputs = getSelectedOutputLangs();
+  document.querySelectorAll("[data-output-lang]").forEach((btn) => {
+    const lang = btn.getAttribute("data-output-lang");
+    const active = selectedOutputs.includes(lang);
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-pressed", String(active));
+  });
+
+  const pairBadge = el("langPairBadge");
+  if (pairBadge) {
+    pairBadge.textContent = selectedOutputs.map((l) => l.toUpperCase()).join(" ⇄ ");
+  }
 }
 
 function bindUI() {
@@ -462,7 +492,7 @@ function bindUI() {
     btn.addEventListener("click", () => {
       const lang = btn.getAttribute("data-speaker-lang") || "th";
       saveSettings({ speakerLang: lang });
-      if (lang === "th" || lang === "en") {
+      if (lang === "th" || lang === "en" || lang === "zh") {
         state.speechRecLang = lang;
       }
       applyVisualSettings();
@@ -481,6 +511,43 @@ function bindUI() {
       renderCurrentTurn();
       renderObsStage();
       broadcastSnapshot();
+    });
+  });
+
+  document.querySelectorAll("[data-output-lang]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const lang = btn.getAttribute("data-output-lang");
+      if (!lang) return;
+      const current = getSelectedOutputLangs();
+      let next;
+      if (current.includes(lang)) {
+        // Keep at least 1 output language active
+        if (current.length <= 1) return;
+        next = current.filter((l) => l !== lang);
+      } else {
+        next = ALL_OUTPUT_LANGS.filter((l) => current.includes(l) || l === lang);
+      }
+      saveSettings({ outputLangs: next });
+      applyVisualSettings();
+      renderHistory();
+      renderCurrentTurn();
+      renderObsStage();
+      broadcastSnapshot();
+
+      // If a turn is active or in history without the newly selected language, translate it now
+      const curIn = cleanTranscriptSpacing(
+        state.currentTurn?.input || state.currentTurn?.previewInput || ""
+      );
+      if (curIn) {
+        const srcLang =
+          state.currentTurn.sourceLang === "auto"
+            ? state.settings.speakerLang || "th"
+            : state.currentTurn.sourceLang || "th";
+        await populateTurnTranslations(state.currentTurn, curIn, srcLang);
+        renderCurrentTurn();
+        renderObsStage();
+        broadcastSnapshot();
+      }
     });
   });
 
@@ -584,6 +651,7 @@ function bindUI() {
   el("downloadHistorySrtBtn")?.addEventListener("click", () => exportCurrentSessionSrt("combined"));
   el("downloadHistoryThSrtBtn")?.addEventListener("click", () => exportCurrentSessionSrt("th"));
   el("downloadHistoryEnSrtBtn")?.addEventListener("click", () => exportCurrentSessionSrt("en"));
+  el("downloadHistoryZhSrtBtn")?.addEventListener("click", () => exportCurrentSessionSrt("zh"));
 
   // Past Sessions & .SRT Popover controls
   el("sessionsBtn")?.addEventListener("click", () => {
@@ -1370,7 +1438,7 @@ function toggleMicMute(forceState) {
  */
 async function translateWithBrowserAi(text, sourceLang, targetLang) {
   const clean = cleanTranscriptSpacing(text);
-  if (!clean) return "";
+  if (!clean || sourceLang === targetLang) return clean;
 
   const pairKey = `${sourceLang}->${targetLang}`;
 
@@ -1404,11 +1472,13 @@ async function translateWithBrowserAi(text, sourceLang, targetLang) {
 
   // 2. Fallback to lightweight browser translation endpoint (with 4s timeout so stalled requests never hang)
   try {
+    const slCode = sourceLang === "zh" ? "zh-CN" : sourceLang;
+    const tlCode = targetLang === "zh" ? "zh-CN" : targetLang;
     const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
     const timeoutId = controller ? setTimeout(() => controller.abort(), 4000) : null;
     const url =
       `https://translate.googleapis.com/translate_a/single?client=gtx` +
-      `&sl=${encodeURIComponent(sourceLang)}&tl=${encodeURIComponent(targetLang)}` +
+      `&sl=${encodeURIComponent(slCode)}&tl=${encodeURIComponent(tlCode)}` +
       `&dt=t&q=${encodeURIComponent(clean)}`;
     const res = await fetch(url, controller ? { signal: controller.signal } : undefined);
     if (timeoutId) clearTimeout(timeoutId);
@@ -1424,6 +1494,41 @@ async function translateWithBrowserAi(text, sourceLang, targetLang) {
   }
 
   return "";
+}
+
+/**
+ * Translate `text` from `srcLang` into all currently selected output languages (1, 2, or 3: TH / EN / ZH)
+ * in parallel and populate `turn.texts` and `turn.output`.
+ */
+async function populateTurnTranslations(turn, text, srcLang) {
+  const clean = cleanTranscriptSpacing(text);
+  if (!clean || !turn) return;
+
+  if (!turn.texts || typeof turn.texts !== "object") {
+    turn.texts = { th: "", en: "", zh: "" };
+  }
+  turn.texts[srcLang] = clean;
+
+  const selected = getSelectedOutputLangs();
+  const primaryTgt = resolvePrimaryTargetLang(srcLang);
+  const targetsToTranslate = new Set(
+    [...selected, primaryTgt].filter((l) => l && l !== srcLang)
+  );
+
+  await Promise.all(
+    [...targetsToTranslate].map(async (tgt) => {
+      const translated = await translateWithBrowserAi(clean, srcLang, tgt);
+      if (translated) {
+        turn.texts[tgt] = translated;
+      }
+    })
+  );
+
+  turn.sourceLang = srcLang;
+  turn.targetLang = primaryTgt;
+  if (turn.texts[primaryTgt]) {
+    turn.output = turn.texts[primaryTgt];
+  }
 }
 
 function stopWebSpeechPreview() {
@@ -1465,9 +1570,10 @@ function syncWebSpeechPreview() {
   if (isDisplayMode || !state.running || state.micMuted) return;
   if (state.settings.audioSource === "__tab__") return;
 
-  // Use the selected Speaker Language (defaults to Thai "th-TH"); never auto-switch on English jargon
+  // Use the selected Speaker Language (defaults to Thai "th-TH"); supports "th", "en", and "zh"
   const speakerLang = state.settings.speakerLang || "th";
-  const activeRecLang = speakerLang === "en" ? "en" : "th";
+  const activeRecLang =
+    speakerLang === "en" ? "en" : speakerLang === "zh" ? "zh" : "th";
   state.speechRecLang = activeRecLang;
 
   const SpeechRecognitionClass =
@@ -1479,7 +1585,12 @@ function syncWebSpeechPreview() {
     rec.continuous = true;
     rec.interimResults = true;
     rec.maxAlternatives = 1;
-    rec.lang = activeRecLang === "en" ? "en-US" : "th-TH";
+    rec.lang =
+      activeRecLang === "en"
+        ? "en-US"
+        : activeRecLang === "zh"
+        ? "zh-CN"
+        : "th-TH";
 
     state.speechRecTurnStartIdx = 0;
     state.speechRecLastLen = 0;
@@ -1533,7 +1644,7 @@ function syncWebSpeechPreview() {
 
       // Keep the selected main speaker language throughout the session; never flip on English technical jargon
       const srcLang = activeRecLang;
-      const tgtLang = srcLang === "th" ? "en" : "th";
+      const tgtLang = resolvePrimaryTargetLang(srcLang);
 
       if (!state.currentTurn.startedAt) {
         state.currentTurn.startedAt = new Date().toLocaleTimeString([], {
@@ -1544,6 +1655,10 @@ function syncWebSpeechPreview() {
         state.currentTurn.epochMs = Date.now();
       }
 
+      if (!state.currentTurn.texts || typeof state.currentTurn.texts !== "object") {
+        state.currentTurn.texts = { th: "", en: "", zh: "" };
+      }
+      state.currentTurn.texts[srcLang] = cleaned;
       state.currentTurn.input = cleaned;
       state.currentTurn.previewInput = cleaned;
       state.currentTurn.isLocalPreview = !state.browserAiMode;
@@ -1554,12 +1669,11 @@ function syncWebSpeechPreview() {
       renderObsStage();
       broadcastSnapshot();
 
-      // In Web Speech + Translate Mode (browserAiMode), translate in the browser and commit finalized phrases
+      // In Web Speech + Translate Mode (browserAiMode), translate into all selected output languages (1, 2, or 3)
       if (state.browserAiMode) {
         const seq = ++state.browserTranslateSeq;
-        const translated = await translateWithBrowserAi(cleaned, srcLang, tgtLang);
+        await populateTurnTranslations(state.currentTurn, cleaned, srcLang);
         if (seq === state.browserTranslateSeq && state.running && state.browserAiMode) {
-          state.currentTurn.output = translated;
           renderCurrentTurn();
           renderObsStage();
           broadcastSnapshot();
@@ -1813,6 +1927,42 @@ function handleLiveEvent(ev) {
     }
 
     updateDetectedLanguages(state.currentTurn);
+    const srcL = state.currentTurn.sourceLang === "auto" ? "th" : state.currentTurn.sourceLang;
+    const tgtL = state.currentTurn.targetLang === "auto" ? "en" : state.currentTurn.targetLang;
+    if (!state.currentTurn.texts || typeof state.currentTurn.texts !== "object") {
+      state.currentTurn.texts = { th: "", en: "", zh: "" };
+    }
+    if (state.currentTurn.input) {
+      state.currentTurn.texts[srcL] = state.currentTurn.input;
+    }
+    if (state.currentTurn.output) {
+      state.currentTurn.texts[tgtL] = state.currentTurn.output;
+    }
+
+    // If additional output languages (e.g. Chinese "zh") are selected in Output Languages,
+    // translate into those additional languages in parallel so all selected output languages appear live.
+    if (side === "input" && state.currentTurn.input) {
+      const extraTargets = getSelectedOutputLangs().filter(
+        (l) => l !== srcL && l !== tgtL
+      );
+      if (extraTargets.length > 0) {
+        const textToTranslate = state.currentTurn.input;
+        const turnRef = state.currentTurn;
+        Promise.all(
+          extraTargets.map(async (lang) => {
+            const tr = await translateWithBrowserAi(textToTranslate, srcL, lang);
+            if (tr && turnRef.texts) {
+              turnRef.texts[lang] = tr;
+            }
+          })
+        ).then(() => {
+          renderCurrentTurn();
+          renderObsStage();
+          broadcastSnapshot();
+        });
+      }
+    }
+
     renderCurrentTurn();
     renderObsStage();
     broadcastSnapshot();
@@ -1830,23 +1980,23 @@ function handleLiveEvent(ev) {
 function updateDetectedLanguages(turn) {
   const mainLang = state.settings.speakerLang || "th";
 
-  // If the user selected a main Speaker Language (TH or EN), keep it fixed for the session
-  // so English technical jargon inside a Thai talk never flips the turn's language tags.
-  if (mainLang === "th" || mainLang === "en") {
+  // If the user selected a main Speaker Language (TH, EN, or ZH), keep it fixed for the session
+  // so English technical jargon inside a Thai/Chinese talk never flips the turn's language tags.
+  if (mainLang === "th" || mainLang === "en" || mainLang === "zh") {
     turn.sourceLang = mainLang;
-    turn.targetLang = mainLang === "th" ? "en" : "th";
+    turn.targetLang = resolvePrimaryTargetLang(mainLang);
     return;
   }
 
   const src = detectLanguage(turn.input);
   const tgt = detectLanguage(turn.output);
 
-  if (tgt !== "auto") {
+  if (src !== "auto") {
+    turn.sourceLang = src;
+    turn.targetLang = tgt !== "auto" && tgt !== src ? tgt : resolvePrimaryTargetLang(src);
+  } else if (tgt !== "auto") {
     turn.targetLang = tgt;
     turn.sourceLang = tgt === "th" ? "en" : "th";
-  } else if (src !== "auto") {
-    turn.sourceLang = src;
-    turn.targetLang = src === "th" ? "en" : "th";
   }
 }
 
@@ -1913,6 +2063,22 @@ function finalizeCurrentTurn() {
     state.sessionStartEpochMs = startEpoch;
   }
 
+  const resolvedSrc =
+    state.currentTurn.sourceLang === "auto" ? "th" : state.currentTurn.sourceLang;
+  const resolvedTgt =
+    state.currentTurn.targetLang === "auto"
+      ? resolvePrimaryTargetLang(resolvedSrc)
+      : state.currentTurn.targetLang;
+
+  const texts = {
+    th: "",
+    en: "",
+    zh: "",
+    ...(state.currentTurn.texts || {}),
+  };
+  if (input && !texts[resolvedSrc]) texts[resolvedSrc] = input;
+  if (output && !texts[resolvedTgt]) texts[resolvedTgt] = output;
+
   const completed = {
     id: `${nowEpoch}-${Math.random().toString(36).slice(2, 7)}`,
     timestamp:
@@ -1926,9 +2092,29 @@ function finalizeCurrentTurn() {
     endEpochMs: Math.max(startEpoch + 1200, nowEpoch),
     input,
     output,
-    sourceLang: state.currentTurn.sourceLang === "auto" ? "th" : state.currentTurn.sourceLang,
-    targetLang: state.currentTurn.targetLang === "auto" ? "en" : state.currentTurn.targetLang,
+    texts,
+    sourceLang: resolvedSrc,
+    targetLang: resolvedTgt,
   };
+
+  // Ensure any selected output language missing on `completed.texts` is translated in the background
+  const missingLangs = getSelectedOutputLangs().filter(
+    (l) => l !== resolvedSrc && !completed.texts[l] && input
+  );
+  if (missingLangs.length > 0) {
+    Promise.all(
+      missingLangs.map(async (lang) => {
+        const tr = await translateWithBrowserAi(input, resolvedSrc, lang);
+        if (tr) completed.texts[lang] = tr;
+      })
+    ).then(() => {
+      renderHistory();
+      renderCurrentTurn();
+      renderObsStage();
+      broadcastSnapshot();
+      persistCurrentSessionToServer();
+    });
+  }
 
   state.historyTurns.push(completed);
   if (state.historyTurns.length > HISTORY_LIMIT) {
@@ -1942,6 +2128,7 @@ function finalizeCurrentTurn() {
     carriedInput: "",
     output: "",
     rawOutput: "",
+    texts: { th: "", en: "", zh: "" },
     sourceLang: "auto",
     targetLang: "auto",
     startedAt: null,
@@ -2003,8 +2190,14 @@ function resolveObsLayoutMode() {
 
 function renderObsStage() {
   const obsStage = el("obsStage");
+  const thaiBlock = el("obsThaiBlock");
+  const engBlock = el("obsEnglishBlock");
+  const zhBlock = el("obsChineseBlock");
+  const div1 = el("obsDivider1");
+  const div2 = el("obsDivider2");
   const thaiListEl = el("obsThaiList");
   const engListEl = el("obsEnglishList");
+  const zhListEl = el("obsChineseList");
   if (!obsStage || !thaiListEl || !engListEl) return;
 
   const poweredByEl = el("obsPoweredBy");
@@ -2013,11 +2206,22 @@ function renderObsStage() {
     poweredByEl.textContent = `powered by ${modelName}`;
   }
 
+  const selected = getSelectedOutputLangs();
+  const showTh = selected.includes("th");
+  const showEn = selected.includes("en");
+  const showZh = selected.includes("zh");
+
+  if (thaiBlock) thaiBlock.hidden = !showTh;
+  if (engBlock) engBlock.hidden = !showEn;
+  if (zhBlock) zhBlock.hidden = !showZh;
+  if (div1) div1.hidden = !(showTh && (showEn || showZh));
+  if (div2) div2.hidden = !(showEn && showZh);
+
   const mode = resolveObsLayoutMode();
   obsStage.classList.toggle("obs-horizontal", mode === "horizontal");
   obsStage.classList.toggle("obs-vertical", mode === "vertical");
 
-  // Allow up to 40 history turns per language; the layout & scroll/clipping will show as many as fit
+  // Allow up to 50 history turns per language; the layout & scroll/clipping will show as many as fit
   const maxLinesPerLang = mode === "horizontal" ? 15 : 50;
 
   // Combine finalized history turns + current in-progress live turn (if any)
@@ -2035,6 +2239,7 @@ function renderObsStage() {
         }),
       input: curIn,
       output: curOut,
+      texts: state.currentTurn.texts,
       sourceLang: state.currentTurn.sourceLang,
       targetLang: state.currentTurn.targetLang,
     });
@@ -2042,25 +2247,32 @@ function renderObsStage() {
 
   const thaiItems = [];
   const engItems = [];
+  const zhItems = [];
 
   for (const turn of allTurns) {
     const ts = turn.timestamp || "00:00:00";
-    const { thai, english } = extractThaiAndEnglish(turn);
+    const { thai, english, chinese } = extractThaiAndEnglish(turn);
     const cleanTh = cleanTranscriptSpacing(thai);
     const cleanEn = cleanTranscriptSpacing(english);
+    const cleanZh = cleanTranscriptSpacing(chinese);
     if (cleanTh) {
       thaiItems.push({ ts, text: cleanTh });
     }
     if (cleanEn) {
       engItems.push({ ts, text: cleanEn });
     }
+    if (cleanZh) {
+      zhItems.push({ ts, text: cleanZh });
+    }
   }
 
   const visibleThai = thaiItems.slice(-maxLinesPerLang);
   const visibleEng = engItems.slice(-maxLinesPerLang);
+  const visibleZh = zhItems.slice(-maxLinesPerLang);
 
-  renderObsLanguageLines(thaiListEl, visibleThai);
-  renderObsLanguageLines(engListEl, visibleEng);
+  if (showTh) renderObsLanguageLines(thaiListEl, visibleThai);
+  if (showEn) renderObsLanguageLines(engListEl, visibleEng);
+  if (showZh && zhListEl) renderObsLanguageLines(zhListEl, visibleZh);
 }
 
 function renderObsLanguageLines(container, items) {
@@ -2286,6 +2498,7 @@ function renderSelectedPastSessionDetail() {
   const downloadCombinedBtn = el("downloadSrtCombinedBtn");
   const downloadThBtn = el("downloadSrtThBtn");
   const downloadEnBtn = el("downloadSrtEnBtn");
+  const downloadZhBtn = el("downloadSrtZhBtn");
   const langSelect = el("srtLangFilterSelect");
 
   const sess = state.selectedPastSession;
@@ -2313,9 +2526,17 @@ function renderSelectedPastSessionDetail() {
     sess.srtThai || sess.srtTh || turnsToSrt(sess.turns || [], "th", baseEpoch);
   const srtEn =
     sess.srtEnglish || sess.srtEn || turnsToSrt(sess.turns || [], "en", baseEpoch);
+  const srtZh =
+    sess.srtChinese || sess.srtZh || turnsToSrt(sess.turns || [], "zh", baseEpoch);
 
   const srtText =
-    langMode === "th" ? srtTh : langMode === "en" ? srtEn : srtCombined;
+    langMode === "th"
+      ? srtTh
+      : langMode === "en"
+      ? srtEn
+      : langMode === "zh"
+      ? srtZh
+      : srtCombined;
 
   if (previewEl) {
     previewEl.textContent = srtText || "(Empty .srt)";
@@ -2343,12 +2564,21 @@ function renderSelectedPastSessionDetail() {
   assignDownloadLink(downloadCombinedBtn, srtCombined, "");
   assignDownloadLink(downloadThBtn, srtTh, ".th");
   assignDownloadLink(downloadEnBtn, srtEn, ".en");
+  assignDownloadLink(downloadZhBtn, srtZh, ".zh");
+}
+
+function getOrderedTurnLanguages(turn) {
+  const selected = getSelectedOutputLangs();
+  const src = turn?.sourceLang && turn.sourceLang !== "auto" ? turn.sourceLang : "th";
+  if (selected.includes(src)) {
+    return [src, ...selected.filter((l) => l !== src)];
+  }
+  return selected;
 }
 
 /**
  * Render the Current / Latest Live Transcription section at the bottom of the screen.
- * When live speech is actively streaming, displays `state.currentTurn`.
- * When between utterances, keeps displaying the latest finalized turn at the bottom of the screen.
+ * Displays 1, 2, or 3 columns depending on the selected Output Languages (`TH`, `EN`, `ZH`).
  */
 function renderCurrentTurn() {
   const liveInput = (state.currentTurn?.input || "").trim();
@@ -2364,45 +2594,59 @@ function renderCurrentTurn() {
     ? state.currentTurn
     : lastHistoryTurn || state.currentTurn;
 
-  const { input = "", output = "", sourceLang = "auto", targetLang = "auto" } =
-    displayTurn || {};
+  const extracted = extractThaiAndEnglish(displayTurn || {});
+  const orderedLangs = getOrderedTurnLanguages(displayTurn);
 
-  const inputEl = el("currentInputText");
-  const outputEl = el("currentOutputText");
+  const gridEl = el("currentGrid");
+  if (gridEl) {
+    gridEl.className = `bilingual-grid current-grid cols-${orderedLangs.length}`;
+  }
+
+  const slots = [
+    {
+      col: el("currentCol1"),
+      tag: el("currentSourceLangTag"),
+      text: el("currentInputText"),
+    },
+    {
+      col: el("currentCol2"),
+      tag: el("currentTargetLangTag"),
+      text: el("currentOutputText"),
+    },
+    {
+      col: el("currentCol3"),
+      tag: el("currentThirdLangTag"),
+      text: el("currentThirdText"),
+    },
+  ];
+
+  slots.forEach((slot, idx) => {
+    const lang = orderedLangs[idx];
+    if (!lang) {
+      if (slot.col) slot.col.hidden = true;
+      return;
+    }
+    if (slot.col) slot.col.hidden = false;
+    if (slot.tag) {
+      slot.tag.textContent = lang.toUpperCase();
+      slot.tag.className = `lang-tag ${lang}`;
+    }
+    if (slot.text) {
+      slot.text.textContent = extracted[lang] || "";
+      slot.text.classList.toggle(
+        "local-preview",
+        Boolean(idx === 0 && isLiveStreaming && state.currentTurn?.isLocalPreview)
+      );
+    }
+  });
+
   const pulseEl = el("livePulse");
   const statusLabelEl = el("currentStatusLabel");
-  const srcTag = el("currentSourceLangTag");
-  const tgtTag = el("currentTargetLangTag");
   const hintEl = el("currentHint");
 
-  if (inputEl) {
-    inputEl.textContent = input;
-    inputEl.classList.toggle("local-preview", Boolean(isLiveStreaming && state.currentTurn?.isLocalPreview));
-  }
-  if (outputEl) outputEl.textContent = output;
   if (pulseEl) pulseEl.classList.toggle("active", state.running && !state.micMuted);
   if (statusLabelEl) {
     statusLabelEl.textContent = isLiveStreaming ? "Live" : "Latest";
-  }
-
-  if (sourceLang === "en" || targetLang === "th") {
-    if (srcTag) {
-      srcTag.textContent = "EN";
-      srcTag.className = "lang-tag en";
-    }
-    if (tgtTag) {
-      tgtTag.textContent = "TH";
-      tgtTag.className = "lang-tag th";
-    }
-  } else {
-    if (srcTag) {
-      srcTag.textContent = "TH";
-      srcTag.className = "lang-tag th";
-    }
-    if (tgtTag) {
-      tgtTag.textContent = "EN";
-      tgtTag.className = "lang-tag en";
-    }
   }
 
   if (hintEl) {
@@ -2450,48 +2694,41 @@ function appendHistoryCard(turn) {
   const card = document.createElement("article");
   card.className = "history-card";
 
-  const isSourceEn = turn.sourceLang === "en";
-  const srcShort = isSourceEn ? "EN" : "TH";
-  const tgtShort = isSourceEn ? "TH" : "EN";
+  const extracted = extractThaiAndEnglish(turn);
+  const orderedLangs = getOrderedTurnLanguages(turn);
 
   const grid = document.createElement("div");
-  grid.className = "bilingual-grid";
+  grid.className = `bilingual-grid cols-${orderedLangs.length}`;
 
-  // Source Inline Row: [TH/EN] text ... timestamp
-  const srcCol = document.createElement("div");
-  srcCol.className = "transcript-col source-col inline-turn-row";
-  const srcBadge = document.createElement("span");
-  srcBadge.className = `lang-tag ${isSourceEn ? "en" : "th"}`;
-  srcBadge.textContent = srcShort;
-  const srcBody = document.createElement("div");
-  srcBody.className = "transcript-text";
-  srcBody.dir = "auto";
-  srcBody.textContent = turn.input || "—";
-  srcCol.appendChild(srcBadge);
-  srcCol.appendChild(srcBody);
+  orderedLangs.forEach((lang, idx) => {
+    const col = document.createElement("div");
+    col.className =
+      idx === 0
+        ? "transcript-col source-col inline-turn-row"
+        : "transcript-col target-col inline-turn-row";
 
-  if (turn.timestamp) {
-    const timeSpan = document.createElement("time");
-    timeSpan.className = "turn-time";
-    timeSpan.textContent = turn.timestamp;
-    srcCol.appendChild(timeSpan);
-  }
+    const badge = document.createElement("span");
+    badge.className = `lang-tag ${lang}`;
+    badge.textContent = lang.toUpperCase();
 
-  // Target Inline Row: [EN/TH] translated text
-  const tgtCol = document.createElement("div");
-  tgtCol.className = "transcript-col target-col inline-turn-row";
-  const tgtBadge = document.createElement("span");
-  tgtBadge.className = `lang-tag ${isSourceEn ? "th" : "en"}`;
-  tgtBadge.textContent = tgtShort;
-  const tgtBody = document.createElement("div");
-  tgtBody.className = "transcript-text translated-text";
-  tgtBody.dir = "auto";
-  tgtBody.textContent = turn.output || "—";
-  tgtCol.appendChild(tgtBadge);
-  tgtCol.appendChild(tgtBody);
+    const body = document.createElement("div");
+    body.className =
+      idx === 0 ? "transcript-text" : "transcript-text translated-text";
+    body.dir = "auto";
+    body.textContent = extracted[lang] || "—";
 
-  grid.appendChild(srcCol);
-  grid.appendChild(tgtCol);
+    col.appendChild(badge);
+    col.appendChild(body);
+
+    if (idx === orderedLangs.length - 1 && turn.timestamp) {
+      const timeSpan = document.createElement("time");
+      timeSpan.className = "turn-time";
+      timeSpan.textContent = turn.timestamp;
+      col.appendChild(timeSpan);
+    }
+
+    grid.appendChild(col);
+  });
 
   card.appendChild(grid);
   listEl.appendChild(card);
@@ -2695,12 +2932,22 @@ const SAMPLE_TURNS = [
     targetLang: "en",
     input: "สวัสดีครับทุกท่าน ยินดีต้อนรับเข้าสู่งานสัมมนาเทคโนโลยีประจำปีของเราในวันนี้",
     output: "Hello everyone, and welcome to our annual technology conference today.",
+    texts: {
+      th: "สวัสดีครับทุกท่าน ยินดีต้อนรับเข้าสู่งานสัมมนาเทคโนโลยีประจำปีของเราในวันนี้",
+      en: "Hello everyone, and welcome to our annual technology conference today.",
+      zh: "大家好，欢迎参加我们今天的年度科技研讨会。",
+    },
   },
   {
     sourceLang: "en",
     targetLang: "th",
     input: "Thank you for joining us. In this session, we will explore how real-time AI interpretation bridges language barriers.",
     output: "ขอบคุณที่มาร่วมงานกับเรา ในเซสชันนี้เราจะมาสำรวจว่าล่าม AI แบบเรียลไทม์ช่วยทลายกำแพงด้านภาษาได้อย่างไร",
+    texts: {
+      th: "ขอบคุณที่มาร่วมงานกับเรา ในเซสชันนี้เราจะมาสำรวจว่าล่าม AI แบบเรียลไทม์ช่วยทลายกำแพงด้านภาษาได้อย่างไร",
+      en: "Thank you for joining us. In this session, we will explore how real-time AI interpretation bridges language barriers.",
+      zh: "感谢大家的参与。在本场会议中，我们将探讨实时人工智能口译如何打破语言障碍。",
+    },
   },
 ];
 let sampleIdx = 0;
@@ -2712,6 +2959,7 @@ function insertSampleTurn() {
   state.currentTurn = {
     input: sample.input,
     output: sample.output,
+    texts: { ...sample.texts },
     sourceLang: sample.sourceLang,
     targetLang: sample.targetLang,
     startedAt: new Date().toLocaleTimeString([], {
@@ -2822,7 +3070,14 @@ function exportCurrentSessionSrt(langMode = "combined") {
   const fileBase =
     state.sessionId ||
     `livetranscribe-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}`;
-  const suffix = langMode === "th" ? ".th" : langMode === "en" ? ".en" : "";
+  const suffix =
+    langMode === "th"
+      ? ".th"
+      : langMode === "en"
+      ? ".en"
+      : langMode === "zh"
+      ? ".zh"
+      : "";
   a.download = `${fileBase}${suffix}.srt`;
   a.click();
   URL.revokeObjectURL(url);
@@ -2976,6 +3231,7 @@ function broadcastSnapshot() {
     fontScale: state.settings.fontScale,
     layoutMode: state.settings.layoutMode,
     obsMode: state.settings.obsMode,
+    outputLangs: getSelectedOutputLangs(),
     historyTurns: state.historyTurns.slice(-50),
     currentTurn: state.currentTurn,
   };
@@ -3018,6 +3274,9 @@ function applyRemoteSnapshot(snapshot) {
   }
   if (snapshot.obsMode) {
     state.settings.obsMode = snapshot.obsMode;
+  }
+  if (Array.isArray(snapshot.outputLangs) && snapshot.outputLangs.length > 0) {
+    state.settings.outputLangs = snapshot.outputLangs;
   }
   applyVisualSettings();
 

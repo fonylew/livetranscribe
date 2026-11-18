@@ -23,45 +23,59 @@ export function formatSrtTimestamp(ms = 0) {
 }
 
 /**
- * Extract the Thai text and English text from a bilingual turn regardless of
- * whether the speaker spoke Thai (`sourceLang === "th"`) or English (`sourceLang === "en"`).
+ * Extract Thai (`th`/`thai`), English (`en`/`english`), and Chinese (`zh`/`chinese`)
+ * texts from a turn regardless of which language the speaker spoke.
  *
- * @param {{input?: string, output?: string, sourceLang?: string, targetLang?: string}} turn
- * @returns {{thai: string, english: string}}
+ * @param {{input?: string, output?: string, sourceLang?: string, targetLang?: string, texts?: {th?: string, en?: string, zh?: string}}} turn
+ * @returns {{thai: string, english: string, chinese: string, th: string, en: string, zh: string}}
  */
 export function extractThaiAndEnglish(turn = {}) {
   const input = String(turn.input || "").trim();
   const output = String(turn.output || "").trim();
   const src = turn.sourceLang || "th";
+  const tgt = turn.targetLang || (src === "th" ? "en" : "th");
+  const texts = turn.texts || {};
 
-  // If sourceLang is explicitly "th" or "en", respect it directly so Thai sentences
-  // containing English technical jargon always stay on the Thai side.
-  if (src === "th") {
-    return {
-      thai: input,
-      english: output,
-    };
-  }
-  if (src === "en") {
-    return {
-      english: input,
-      thai: output,
-    };
-  }
+  let thai = String(texts.th || "").trim();
+  let english = String(texts.en || "").trim();
+  let chinese = String(texts.zh || "").trim();
 
-  const inputHasThai = /[\u0E00-\u0E7F]/.test(input);
-  const outputHasThai = /[\u0E00-\u0E7F]/.test(output);
+  if (src === "th" && !thai) thai = input;
+  if (src === "en" && !english) english = input;
+  if (src === "zh" && !chinese) chinese = input;
 
-  if (inputHasThai && !outputHasThai) {
-    return { thai: input, english: output };
-  }
-  if (outputHasThai && !inputHasThai) {
-    return { thai: output, english: input };
+  if (tgt === "th" && !thai) thai = output;
+  if (tgt === "en" && !english) english = output;
+  if (tgt === "zh" && !chinese) chinese = output;
+
+  // Fallback heuristics for older turns without explicit texts/sourceLang
+  if (!thai && !english && !chinese && (input || output)) {
+    const inputHasThai = /[\u0E00-\u0E7F]/.test(input);
+    const outputHasThai = /[\u0E00-\u0E7F]/.test(output);
+    const inputHasZh = /[\u4E00-\u9FFF\u3400-\u4DBF]/.test(input);
+    const outputHasZh = /[\u4E00-\u9FFF\u3400-\u4DBF]/.test(output);
+
+    if (inputHasThai && !outputHasThai) {
+      thai = input;
+      if (outputHasZh) chinese = output;
+      else english = output;
+    } else if (outputHasThai && !inputHasThai) {
+      thai = output;
+      if (inputHasZh) chinese = input;
+      else english = input;
+    } else {
+      thai = input;
+      english = output;
+    }
   }
 
   return {
-    thai: input,
-    english: output,
+    thai,
+    english,
+    chinese,
+    th: thai,
+    en: english,
+    zh: chinese,
   };
 }
 
@@ -69,7 +83,7 @@ export function extractThaiAndEnglish(turn = {}) {
  * Convert an array of session turns into valid SubRip (`.srt`) format.
  *
  * @param {Array<object>} turns
- * @param {"combined"|"th"|"en"} [mode="combined"]
+ * @param {"combined"|"th"|"en"|"zh"|Array<string>} [mode="combined"]
  * @param {number} [sessionStartEpochMs]
  * @returns {string}
  */
@@ -88,16 +102,25 @@ export function turnsToSrt(turns = [], mode = "combined", sessionStartEpochMs = 
 
   for (let i = 0; i < turns.length; i++) {
     const turn = turns[i];
-    const { thai, english } = extractThaiAndEnglish(turn);
+    const extracted = extractThaiAndEnglish(turn);
+    const { thai, english, chinese } = extracted;
 
-    let lines = [];
-    if (mode === "th") {
+    const lines = [];
+    if (Array.isArray(mode)) {
+      for (const lang of mode) {
+        const val = extracted[lang];
+        if (val) lines.push(val);
+      }
+    } else if (mode === "th") {
       if (thai) lines.push(thai);
     } else if (mode === "en") {
       if (english) lines.push(english);
+    } else if (mode === "zh") {
+      if (chinese) lines.push(chinese);
     } else {
       if (thai) lines.push(thai);
       if (english) lines.push(english);
+      if (chinese) lines.push(chinese);
     }
 
     if (!lines.length) continue;
