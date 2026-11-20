@@ -43,7 +43,7 @@ const SILENCE_HOLD_MS = 10000; // Only pause stream after 10s of dead silence so
 const PREROLL_MAX_FRAMES = 44; // ~350ms of 8ms worklet frames kept when silence-gated
 const MIC_DEAD_WARN_MS = 8000; // Warn if selected input has zero signal for first 8s
 
-const ALL_OUTPUT_LANGS = ["th", "en", "zh"];
+const ALL_OUTPUT_LANGS = ["th", "en", "zh", "lo"];
 
 const DEFAULT_SETTINGS = {
   apiKey: "",
@@ -51,8 +51,9 @@ const DEFAULT_SETTINGS = {
   modelExplicitlySet: false,
   engineMode: "webspeech", // "webspeech" (Default) | "gemini"
   engineModeExplicitlySet: false,
-  speakerLang: "th", // "auto" | "th" | "en" | "zh" — defaults to Thai ("th")
-  outputLangs: ["th", "en", "zh"], // 1, 2, or 3 output languages ("th", "en", "zh")
+  speakerLang: "th", // "auto" | "th" | "en" | "zh" | "lo" — defaults to Thai ("th")
+  outputLangs: ["th", "en", "zh", "lo"], // 1, 2, 3, or 4 output languages ("th", "en", "zh", "lo")
+  outputLangsExplicitlySet: false,
   fontScale: 100,
   layoutMode: "side-by-side", // "side-by-side" | "stacked"
   obsMode: "auto", // "auto" | "horizontal" | "vertical"
@@ -66,9 +67,9 @@ const DEFAULT_SETTINGS = {
 
 function getSelectedOutputLangs() {
   const raw = state?.settings?.outputLangs;
-  if (!Array.isArray(raw) || raw.length === 0) return ["th", "en", "zh"];
+  if (!Array.isArray(raw) || raw.length === 0) return ["th", "en", "zh", "lo"];
   const valid = ALL_OUTPUT_LANGS.filter((l) => raw.includes(l));
-  return valid.length > 0 ? valid : ["th", "en", "zh"];
+  return valid.length > 0 ? valid : ["th", "en", "zh", "lo"];
 }
 
 function resolvePrimaryTargetLang(srcLang = "th") {
@@ -172,6 +173,9 @@ function loadSettings() {
     }
     if (!parsed.engineModeExplicitlySet) {
       merged.engineMode = "webspeech";
+    }
+    if (!parsed.outputLangsExplicitlySet) {
+      merged.outputLangs = ["th", "en", "zh", "lo"];
     }
     return merged;
   } catch {
@@ -492,7 +496,7 @@ function bindUI() {
     btn.addEventListener("click", () => {
       const lang = btn.getAttribute("data-speaker-lang") || "th";
       saveSettings({ speakerLang: lang });
-      if (lang === "th" || lang === "en" || lang === "zh") {
+      if (lang === "th" || lang === "en" || lang === "zh" || lang === "lo") {
         state.speechRecLang = lang;
       }
       applyVisualSettings();
@@ -527,7 +531,7 @@ function bindUI() {
       } else {
         next = ALL_OUTPUT_LANGS.filter((l) => current.includes(l) || l === lang);
       }
-      saveSettings({ outputLangs: next });
+      saveSettings({ outputLangs: next, outputLangsExplicitlySet: true });
       applyVisualSettings();
       renderHistory();
       renderCurrentTurn();
@@ -652,6 +656,7 @@ function bindUI() {
   el("downloadHistoryThSrtBtn")?.addEventListener("click", () => exportCurrentSessionSrt("th"));
   el("downloadHistoryEnSrtBtn")?.addEventListener("click", () => exportCurrentSessionSrt("en"));
   el("downloadHistoryZhSrtBtn")?.addEventListener("click", () => exportCurrentSessionSrt("zh"));
+  el("downloadHistoryLoSrtBtn")?.addEventListener("click", () => exportCurrentSessionSrt("lo"));
 
   // Past Sessions & .SRT Popover controls
   el("sessionsBtn")?.addEventListener("click", () => {
@@ -1570,10 +1575,16 @@ function syncWebSpeechPreview() {
   if (isDisplayMode || !state.running || state.micMuted) return;
   if (state.settings.audioSource === "__tab__") return;
 
-  // Use the selected Speaker Language (defaults to Thai "th-TH"); supports "th", "en", and "zh"
+  // Use the selected Speaker Language (defaults to Thai "th-TH"); supports "th", "en", "zh", and "lo"
   const speakerLang = state.settings.speakerLang || "th";
   const activeRecLang =
-    speakerLang === "en" ? "en" : speakerLang === "zh" ? "zh" : "th";
+    speakerLang === "en"
+      ? "en"
+      : speakerLang === "zh"
+      ? "zh"
+      : speakerLang === "lo"
+      ? "lo"
+      : "th";
   state.speechRecLang = activeRecLang;
 
   const SpeechRecognitionClass =
@@ -1590,6 +1601,8 @@ function syncWebSpeechPreview() {
         ? "en-US"
         : activeRecLang === "zh"
         ? "zh-CN"
+        : activeRecLang === "lo"
+        ? "lo-LA"
         : "th-TH";
 
     state.speechRecTurnStartIdx = 0;
@@ -1980,9 +1993,9 @@ function handleLiveEvent(ev) {
 function updateDetectedLanguages(turn) {
   const mainLang = state.settings.speakerLang || "th";
 
-  // If the user selected a main Speaker Language (TH, EN, or ZH), keep it fixed for the session
-  // so English technical jargon inside a Thai/Chinese talk never flips the turn's language tags.
-  if (mainLang === "th" || mainLang === "en" || mainLang === "zh") {
+  // If the user selected a main Speaker Language (TH, EN, ZH, or LO), keep it fixed for the session
+  // so English technical jargon inside a Thai/Chinese/Lao talk never flips the turn's language tags.
+  if (mainLang === "th" || mainLang === "en" || mainLang === "zh" || mainLang === "lo") {
     turn.sourceLang = mainLang;
     turn.targetLang = resolvePrimaryTargetLang(mainLang);
     return;
@@ -2193,11 +2206,14 @@ function renderObsStage() {
   const thaiBlock = el("obsThaiBlock");
   const engBlock = el("obsEnglishBlock");
   const zhBlock = el("obsChineseBlock");
+  const loBlock = el("obsLaoBlock");
   const div1 = el("obsDivider1");
   const div2 = el("obsDivider2");
+  const div3 = el("obsDivider3");
   const thaiListEl = el("obsThaiList");
   const engListEl = el("obsEnglishList");
   const zhListEl = el("obsChineseList");
+  const loListEl = el("obsLaoList");
   if (!obsStage || !thaiListEl || !engListEl) return;
 
   const poweredByEl = el("obsPoweredBy");
@@ -2210,12 +2226,15 @@ function renderObsStage() {
   const showTh = selected.includes("th");
   const showEn = selected.includes("en");
   const showZh = selected.includes("zh");
+  const showLo = selected.includes("lo");
 
   if (thaiBlock) thaiBlock.hidden = !showTh;
   if (engBlock) engBlock.hidden = !showEn;
   if (zhBlock) zhBlock.hidden = !showZh;
-  if (div1) div1.hidden = !(showTh && (showEn || showZh));
-  if (div2) div2.hidden = !(showEn && showZh);
+  if (loBlock) loBlock.hidden = !showLo;
+  if (div1) div1.hidden = !(showTh && (showEn || showZh || showLo));
+  if (div2) div2.hidden = !(showEn && (showZh || showLo));
+  if (div3) div3.hidden = !(showZh && showLo);
 
   const mode = resolveObsLayoutMode();
   obsStage.classList.toggle("obs-horizontal", mode === "horizontal");
@@ -2248,13 +2267,15 @@ function renderObsStage() {
   const thaiItems = [];
   const engItems = [];
   const zhItems = [];
+  const loItems = [];
 
   for (const turn of allTurns) {
     const ts = turn.timestamp || "00:00:00";
-    const { thai, english, chinese } = extractThaiAndEnglish(turn);
+    const { thai, english, chinese, lao } = extractThaiAndEnglish(turn);
     const cleanTh = cleanTranscriptSpacing(thai);
     const cleanEn = cleanTranscriptSpacing(english);
     const cleanZh = cleanTranscriptSpacing(chinese);
+    const cleanLo = cleanTranscriptSpacing(lao);
     if (cleanTh) {
       thaiItems.push({ ts, text: cleanTh });
     }
@@ -2264,15 +2285,20 @@ function renderObsStage() {
     if (cleanZh) {
       zhItems.push({ ts, text: cleanZh });
     }
+    if (cleanLo) {
+      loItems.push({ ts, text: cleanLo });
+    }
   }
 
   const visibleThai = thaiItems.slice(-maxLinesPerLang);
   const visibleEng = engItems.slice(-maxLinesPerLang);
   const visibleZh = zhItems.slice(-maxLinesPerLang);
+  const visibleLo = loItems.slice(-maxLinesPerLang);
 
   if (showTh) renderObsLanguageLines(thaiListEl, visibleThai);
   if (showEn) renderObsLanguageLines(engListEl, visibleEng);
   if (showZh && zhListEl) renderObsLanguageLines(zhListEl, visibleZh);
+  if (showLo && loListEl) renderObsLanguageLines(loListEl, visibleLo);
 }
 
 function renderObsLanguageLines(container, items) {
@@ -2499,6 +2525,7 @@ function renderSelectedPastSessionDetail() {
   const downloadThBtn = el("downloadSrtThBtn");
   const downloadEnBtn = el("downloadSrtEnBtn");
   const downloadZhBtn = el("downloadSrtZhBtn");
+  const downloadLoBtn = el("downloadSrtLoBtn");
   const langSelect = el("srtLangFilterSelect");
 
   const sess = state.selectedPastSession;
@@ -2528,6 +2555,8 @@ function renderSelectedPastSessionDetail() {
     sess.srtEnglish || sess.srtEn || turnsToSrt(sess.turns || [], "en", baseEpoch);
   const srtZh =
     sess.srtChinese || sess.srtZh || turnsToSrt(sess.turns || [], "zh", baseEpoch);
+  const srtLo =
+    sess.srtLao || sess.srtLo || turnsToSrt(sess.turns || [], "lo", baseEpoch);
 
   const srtText =
     langMode === "th"
@@ -2536,6 +2565,8 @@ function renderSelectedPastSessionDetail() {
       ? srtEn
       : langMode === "zh"
       ? srtZh
+      : langMode === "lo"
+      ? srtLo
       : srtCombined;
 
   if (previewEl) {
@@ -2565,6 +2596,7 @@ function renderSelectedPastSessionDetail() {
   assignDownloadLink(downloadThBtn, srtTh, ".th");
   assignDownloadLink(downloadEnBtn, srtEn, ".en");
   assignDownloadLink(downloadZhBtn, srtZh, ".zh");
+  assignDownloadLink(downloadLoBtn, srtLo, ".lo");
 }
 
 function getOrderedTurnLanguages(turn) {
@@ -2617,6 +2649,11 @@ function renderCurrentTurn() {
       col: el("currentCol3"),
       tag: el("currentThirdLangTag"),
       text: el("currentThirdText"),
+    },
+    {
+      col: el("currentCol4"),
+      tag: el("currentFourthLangTag"),
+      text: el("currentFourthText"),
     },
   ];
 
@@ -2936,6 +2973,7 @@ const SAMPLE_TURNS = [
       th: "สวัสดีครับทุกท่าน ยินดีต้อนรับเข้าสู่งานสัมมนาเทคโนโลยีประจำปีของเราในวันนี้",
       en: "Hello everyone, and welcome to our annual technology conference today.",
       zh: "大家好，欢迎参加我们今天的年度科技研讨会。",
+      lo: "ສະບາຍດີທຸກທ່ານ ຍິນດີຕ້ອນຮັບເຂົ້າສູ່ງານສຳມະນາເຕັກໂນໂລຊີປະຈຳປີຂອງພວກເຮົາໃນມື້ນີ້.",
     },
   },
   {
@@ -2947,6 +2985,7 @@ const SAMPLE_TURNS = [
       th: "ขอบคุณที่มาร่วมงานกับเรา ในเซสชันนี้เราจะมาสำรวจว่าล่าม AI แบบเรียลไทม์ช่วยทลายกำแพงด้านภาษาได้อย่างไร",
       en: "Thank you for joining us. In this session, we will explore how real-time AI interpretation bridges language barriers.",
       zh: "感谢大家的参与。在本场会议中，我们将探讨实时人工智能口译如何打破语言障碍。",
+      lo: "ຂອບໃຈທີ່ເຂົ້າຮ່ວມກັບພວກເຮົາ. ໃນກອງປະຊຸມນີ້, ພວກເຮົາຈະຄົ້ນຫາວ່າການແປພາສາ AI ແບບສົດໆຊ່ວຍຫຼຸດຜ່ອນອຸປະສັກທາງພາສາໄດ້ແນວໃດ.",
     },
   },
 ];
@@ -3077,6 +3116,8 @@ function exportCurrentSessionSrt(langMode = "combined") {
       ? ".en"
       : langMode === "zh"
       ? ".zh"
+      : langMode === "lo"
+      ? ".lo"
       : "";
   a.download = `${fileBase}${suffix}.srt`;
   a.click();

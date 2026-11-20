@@ -17,7 +17,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css?v=23" />
+    <link rel="stylesheet" href="./styles.css?v=24" />
   </head>
   <body>
     <!-- Compact Persistent Control Bar (Hidden in ?view=display OBS Mode) -->
@@ -26,7 +26,7 @@
         <div class="brand">
           <span class="status-dot disconnected" id="statusDot" title="Disconnected"></span>
           <span class="brand-title">LiveTranscribe</span>
-          <span class="lang-pair-badge" id="langPairBadge" title="Multilingual Thai, English, and Chinese">TH ⇄ EN ⇄ ZH</span>
+          <span class="lang-pair-badge" id="langPairBadge" title="Multilingual Thai, English, Chinese, and Lao">TH ⇄ EN ⇄ ZH ⇄ LO</span>
         </div>
 
         <span class="status-text" id="statusText">Idle</span>
@@ -131,15 +131,23 @@
           >
             ZH
           </button>
+          <button
+            type="button"
+            class="lang-mode-btn"
+            data-speaker-lang="lo"
+            aria-pressed="false"
+          >
+            LO
+          </button>
         </div>
 
-        <!-- Output Languages Multi-Select Toggle (Out: Select 1, 2, or 3 languages: TH / EN / ZH) -->
+        <!-- Output Languages Multi-Select Toggle (Out: Select 1, 2, 3, or 4 languages: TH / EN / ZH / LO) -->
         <div
           class="speaker-lang-toggle output-lang-toggle"
           id="outputLangGroup"
           role="group"
-          aria-label="Output Languages (Select 1, 2, or 3 languages: Thai, English, Chinese)"
-          title="Output Languages: Click to toggle 1, 2, or 3 languages (TH, EN, ZH)"
+          aria-label="Output Languages (Select 1, 2, 3, or 4 languages: Thai, English, Chinese, Lao)"
+          title="Output Languages: Click to toggle 1, 2, 3, or 4 languages (TH, EN, ZH, LO)"
         >
           <span class="toggle-group-prefix">Out:</span>
           <button
@@ -165,6 +173,14 @@
             aria-pressed="true"
           >
             ZH
+          </button>
+          <button
+            type="button"
+            class="lang-mode-btn active"
+            data-output-lang="lo"
+            aria-pressed="true"
+          >
+            LO
           </button>
         </div>
 
@@ -348,6 +364,7 @@
               <button type="button" class="btn btn-xs srt-tab" data-srt-mode="th">Thai .SRT</button>
               <button type="button" class="btn btn-xs srt-tab" data-srt-mode="en">English .SRT</button>
               <button type="button" class="btn btn-xs srt-tab" data-srt-mode="zh">Chinese .SRT</button>
+              <button type="button" class="btn btn-xs srt-tab" data-srt-mode="lo">Lao .SRT</button>
             </div>
           </div>
 
@@ -358,6 +375,7 @@
             <a href="#" class="btn btn-ghost btn-xs" id="downloadSrtThBtn" download>Download Thai .SRT</a>
             <a href="#" class="btn btn-ghost btn-xs" id="downloadSrtEnBtn" download>Download English .SRT</a>
             <a href="#" class="btn btn-ghost btn-xs" id="downloadSrtZhBtn" download>Download Chinese .SRT</a>
+            <a href="#" class="btn btn-ghost btn-xs" id="downloadSrtLoBtn" download>Download Lao .SRT</a>
             <button type="button" class="btn btn-ghost btn-xs" id="loadSessionToStageBtn">Load into Main Screen</button>
           </div>
         </div>
@@ -528,6 +546,14 @@
             <button
               type="button"
               class="btn btn-ghost btn-xs"
+              id="downloadHistoryLoSrtBtn"
+              title="Download Lao-Only .SRT Subtitle File"
+            >
+              ⬇ .SRT (LO)
+            </button>
+            <button
+              type="button"
+              class="btn btn-ghost btn-xs"
               id="layoutToggleBtn"
               title="Switch between Side-by-Side and Stacked transcript view"
             >
@@ -562,7 +588,7 @@
           <span class="current-hint" id="currentHint">Waiting for speech...</span>
         </div>
 
-        <div class="bilingual-grid current-grid cols-3" id="currentGrid">
+        <div class="bilingual-grid current-grid cols-4" id="currentGrid">
           <div class="transcript-col source-col inline-turn-row" id="currentCol1">
             <span class="lang-tag th" id="currentSourceLangTag">TH</span>
             <div class="transcript-text current-text" id="currentInputText" dir="auto"></div>
@@ -577,13 +603,18 @@
             <span class="lang-tag zh" id="currentThirdLangTag">ZH</span>
             <div class="transcript-text current-text translated-text" id="currentThirdText" dir="auto"></div>
           </div>
+
+          <div class="transcript-col target-col inline-turn-row" id="currentCol4">
+            <span class="lang-tag lo" id="currentFourthLangTag">LO</span>
+            <div class="transcript-text current-text translated-text" id="currentFourthText" dir="auto"></div>
+          </div>
         </div>
       </section>
     </main>
 
     <!-- ======================================================================
          2. COMPACT OBS VIEW (`?view=display`):
-            Supports 1, 2, or 3 Selected Output Languages (Thai, English, Chinese)
+            Supports 1, 2, 3, or 4 Selected Output Languages (Thai, English, Chinese, Lao)
          ====================================================================== -->
     <main class="obs-stage" id="obsStage" aria-live="polite">
       <div class="obs-powered-by" id="obsPoweredBy">powered by web-speech + translate</div>
@@ -606,8 +637,15 @@
         <div class="obs-lang-header">Chinese (中文)</div>
         <div class="obs-lines" id="obsChineseList"></div>
       </section>
+
+      <div class="obs-divider" id="obsDivider3" aria-hidden="true">----------</div>
+
+      <section class="obs-lang-block" id="obsLaoBlock">
+        <div class="obs-lang-header">Lao (ພາສາລາວ)</div>
+        <div class="obs-lines" id="obsLaoList"></div>
+      </section>
     </main>
 
-    <script type="module" src="./app.js?v=23"></script>
+    <script type="module" src="./app.js?v=24"></script>
   </body>
 </html>

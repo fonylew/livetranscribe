@@ -266,22 +266,26 @@ test("srt & storage: generates .SRT files, isolates past sessions per clientToke
     },
   ];
 
-  // Verify extractThaiAndEnglish normalizes Thai, English, and Chinese regardless of speaking direction
+  // Verify extractThaiAndEnglish normalizes Thai, English, Chinese, and Lao regardless of speaking direction
   assert.deepEqual(extractThaiAndEnglish(sampleTurns[0]), {
     thai: "สวัสดีครับทุกท่าน",
     english: "Hello everyone.",
     chinese: "",
+    lao: "",
     th: "สวัสดีครับทุกท่าน",
     en: "Hello everyone.",
     zh: "",
+    lo: "",
   });
   assert.deepEqual(extractThaiAndEnglish(sampleTurns[1]), {
     thai: "ยินดีต้อนรับสู่ Cloud Run",
     english: "Welcome to Cloud Run.",
     chinese: "",
+    lao: "",
     th: "ยินดีต้อนรับสู่ Cloud Run",
     en: "Welcome to Cloud Run.",
     zh: "",
+    lo: "",
   });
 
   const combinedSrt = turnsToSrt(sampleTurns, "combined", 1000);
@@ -435,18 +439,20 @@ test("instructions: builds bidirectional Thai ⇄ English prompt with glossary &
   assert.match(instruction, /- กรุงเทพมหานคร → Bangkok/);
 });
 
-test("instructions: detects Thai, English, and Chinese accurately", () => {
+test("instructions: detects Thai, English, Chinese, and Lao accurately", () => {
   assert.equal(detectLanguage("สวัสดีครับ ยินดีต้อนรับสู่การประชุม"), "th");
   assert.equal(detectLanguage("สวัสดีครับ วันนี้เราจะพูดเรื่อง Kubernetes Cluster"), "th");
   assert.equal(detectLanguage("Welcome everyone to our keynote session today."), "en");
   assert.equal(detectLanguage("大家好，欢迎参加我们今天的年度科技研讨会。"), "zh");
+  assert.equal(detectLanguage("ສະບາຍດີທຸກທ່ານ ຍິນດີຕ້ອນຮັບເຂົ້າສູ່ກອງປະຊຸມ"), "lo");
   assert.equal(detectLanguage(""), "auto");
 });
 
-test("instructions: cleans extra spaces between Thai characters, preserves Chinese sentences, and strips noise", () => {
+test("instructions: cleans extra spaces between Thai/Lao characters, preserves Chinese & Lao sentences, and strips noise", () => {
   const raw = "สวัสดี  ครับ ทุกท่าน";
   assert.equal(cleanTranscriptSpacing(raw), "สวัสดี ครับ ทุกท่าน");
   assert.equal(cleanTranscriptSpacing("大家好，欢迎参加今天的会议。"), "大家好，欢迎参加今天的会议。");
+  assert.equal(cleanTranscriptSpacing("ສະບາຍດີ  ທຸກທ່ານ"), "ສະບາຍດີ ທຸກທ່ານ");
   assert.equal(cleanTranscriptSpacing("哼。"), "");
   assert.equal(cleanTranscriptSpacing("<no speech detected>"), "");
   assert.equal(cleanTranscriptSpacing("𖢄𖢄 𖢄𖢄 𖢄𖢄𖢄𖢄."), "");

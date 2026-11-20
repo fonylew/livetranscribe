@@ -7,6 +7,7 @@ export const SUPPORTED_LANGUAGES = {
   th: "Thai (ภาษาไทย)",
   en: "English",
   zh: "Chinese (中文)",
+  lo: "Lao (ພາສາລາວ)",
 };
 
 const ECHO_GUARD =
@@ -81,23 +82,32 @@ export function buildBidirectionalInstruction({
       `Translate the speaker's Chinese (中文) speech directly into natural ${targetName}, while preserving technical jargon, acronyms, and product names accurately. ` +
       `RULE 1 (Chinese -> ${targetName}): ALWAYS translate the speaker's utterance into natural ${targetName} (never stay silent). ` +
       `RULE 2 (Other Languages -> Chinese): If the speaker speaks a complete sentence in ${targetName}, translate it into natural Chinese (中文). `;
+  } else if (speakerLang === "lo") {
+    const targetName = SUPPORTED_LANGUAGES[langB] || nameB;
+    languageRules =
+      `MAIN SPEAKER LANGUAGE IS LAO (Lao (ພາສາລາວ)): The speaker's main language for this entire session is Lao (ພາສາລາວ). ` +
+      `DO NOT switch the main language in the middle of the session. ` +
+      `Translate the speaker's Lao (ພາສາລາວ) speech directly into natural ${targetName}, while preserving technical jargon, acronyms, and product names accurately. ` +
+      `RULE 1 (Lao -> ${targetName}): ALWAYS translate the speaker's utterance into natural ${targetName} (never stay silent). ` +
+      `RULE 2 (Other Languages -> Lao): If the speaker speaks a complete sentence in ${targetName}, translate it into natural Lao (ພາສາລາວ). `;
   } else {
     languageRules =
       `RULE 1 (Thai -> English): Whenever the speaker speaks in ${nameA} (including Thai mixed with English technical jargon, acronyms, or product names), ALWAYS translate the entire utterance directly into natural ${nameB}. ` +
       `RULE 2 (English -> Thai): Whenever the speaker speaks in ${nameB}, ALWAYS translate the entire utterance directly into natural, polite ${nameA}. ` +
-      `RULE 2B (Chinese -> ${nameB}): Whenever the speaker speaks in Chinese (中文), ALWAYS translate the entire utterance directly into natural ${nameB}. `;
+      `RULE 2B (Chinese -> ${nameB}): Whenever the speaker speaks in Chinese (中文), ALWAYS translate the entire utterance directly into natural ${nameB}. ` +
+      `RULE 2C (Lao -> ${nameB}): Whenever the speaker speaks in Lao (ພາສາລາວ), ALWAYS translate the entire utterance directly into natural ${nameB}. `;
   }
 
   return (
-    `You are a simultaneous translator between ${nameA}, ${nameB}, and Chinese (中文). ` +
+    `You are a simultaneous translator between ${nameA}, ${nameB}, Chinese (中文), and Lao (ພາສາລາວ). ` +
     `${contextClause}` +
     `${languageRules}` +
     `ALWAYS produce a translation for every spoken phrase—never skip a turn or leave the output empty when the speaker speaks. ` +
     `RULE 3 (Strict Translation Only — Never Converse): NEVER reply to the speaker, NEVER acknowledge instructions (do not say "รับทราบค่ะ" or "ขออภัยค่ะ"), NEVER explain what language you are waiting for, and NEVER ask questions. Even if the speaker says "change language" or talks about translation, just translate their exact words. ` +
     `RULE 4 (Never Echo Same Language): Never repeat an utterance in the same language it was spoken in. ` +
-    `RULE 5 (Strict Thai, English & Chinese Only — NO Spanish or Other Languages): The speaker ONLY speaks Thai (ภาษาไทย), English, or Chinese (中文). ` +
-    `NEVER output Spanish, French, Portuguese, German, Japanese, Korean, or any other language besides Thai, English, and Chinese. ` +
-    `Even if a word sounds similar to a Spanish word, ALWAYS interpret it as Thai, English, or Chinese and output ONLY the target language. ` +
+    `RULE 5 (Strict Thai, English, Chinese & Lao Only — NO Spanish or Other Languages): The speaker ONLY speaks Thai (ภาษาไทย), English, Chinese (中文), or Lao (ພາສາລາວ). ` +
+    `NEVER output Spanish, French, Portuguese, German, Japanese, Korean, or any other language besides Thai, English, Chinese, and Lao. ` +
+    `Even if a word sounds similar to a Spanish word, ALWAYS interpret it as Thai, English, Chinese, or Lao and output ONLY the target language. ` +
     `Never output placeholders like "<no speech detected>" or "[noise]". ` +
     `If the audio is only background noise, a cough, or silence, stay completely silent and output nothing. ` +
     ECHO_GUARD +
@@ -127,20 +137,25 @@ export function parseGlossaryText(raw = "") {
 }
 
 const THAI_CHAR_RE = /[\u0E00-\u0E7F]/g;
+const LAO_CHAR_RE = /[\u0E80-\u0EFF]/g;
 const CJK_CHAR_RE = /[\u4E00-\u9FFF\u3400-\u4DBF]/g;
 const LATIN_CHAR_RE = /[A-Za-z]/g;
 
 /**
- * Detect whether a transcript snippet is primarily Thai (`"th"`), Chinese (`"zh"`), or English (`"en"`).
+ * Detect whether a transcript snippet is primarily Thai (`"th"`), Lao (`"lo"`), Chinese (`"zh"`), or English (`"en"`).
  * @param {string} text
- * @returns {"th"|"en"|"zh"|"auto"}
+ * @returns {"th"|"en"|"zh"|"lo"|"auto"}
  */
 export function detectLanguage(text = "") {
   if (!text) return "auto";
   const thaiCount = (text.match(THAI_CHAR_RE) || []).length;
+  const laoCount = (text.match(LAO_CHAR_RE) || []).length;
   const cjkCount = (text.match(CJK_CHAR_RE) || []).length;
   const latinCount = (text.match(LATIN_CHAR_RE) || []).length;
-  if (thaiCount === 0 && cjkCount === 0 && latinCount === 0) return "auto";
+  if (thaiCount === 0 && laoCount === 0 && cjkCount === 0 && latinCount === 0) return "auto";
+  if (laoCount > 0 && laoCount >= thaiCount && laoCount >= cjkCount) {
+    return "lo";
+  }
   // Any Thai script presence in the utterance means the sentence is Thai (with English technical jargon)
   if (thaiCount > 0 && thaiCount >= cjkCount) {
     return "th";
@@ -154,9 +169,9 @@ export function detectLanguage(text = "") {
 /**
  * Sanitize and clean transcript text:
  * - Removes ASR noise placeholders such as `<no speech detected>`, `[noise]`, `[silence]`
- * - Allows Thai (`\u0E00-\u0E7F`), English/ASCII (`\u0020-\u007E`), and Chinese (`\u4E00-\u9FFF`, `\u3400-\u4DBF`)
+ * - Allows Thai (`\u0E00-\u0E7F`), Lao (`\u0E80-\u0EFF`), English/ASCII (`\u0020-\u007E`), and Chinese (`\u4E00-\u9FFF`, `\u3400-\u4DBF`)
  * - Removes Spanish/French accented characters and exotic scripts
- * - Collapses spurious multiple spaces between Thai characters
+ * - Collapses spurious multiple spaces between Thai/Lao characters
  * @param {string} text
  */
 export function cleanTranscriptSpacing(text = "") {
@@ -167,25 +182,25 @@ export function cleanTranscriptSpacing(text = "") {
     .replace(/\[\s*(?:no\s+speech\s+detected|noise|silence|inaudible|music|applause|laughter)[^\]]*\]/gi, "")
     // Strip known single-character ASR grunt hallucination ("哼")
     .replace(/哼[。.,!?]*/g, "")
-    // Allow standard unaccented ASCII/English (\u0020-\u007E), Thai script (\u0E00-\u0E7F),
+    // Allow standard unaccented ASCII/English (\u0020-\u007E), Thai & Lao script (\u0E00-\u0EFF),
     // Chinese/CJK Unified Ideographs (\u4E00-\u9FFF, \u3400-\u4DBF), CJK punctuation (\u3000-\u303F, \uFF00-\uFFEF),
     // and standard typographic punctuation/currency (\u2000-\u206F, \u20A0-\u20CF).
     .replace(
-      /[^\u0009\u000A\u000D\u0020-\u007E\u0E00-\u0E7F\u2000-\u206F\u20A0-\u20CF\u3000-\u303F\u3400-\u4DBF\u4E00-\u9FFF\uFF00-\uFFEF]/gu,
+      /[^\u0009\u000A\u000D\u0020-\u007E\u0E00-\u0EFF\u2000-\u206F\u20A0-\u20CF\u3000-\u303F\u3400-\u4DBF\u4E00-\u9FFF\uFF00-\uFFEF]/gu,
       ""
     );
 
-  cleaned = cleaned.replace(/([ \t]+)(?=[\u0E00-\u0E7F])/g, (spaces, _g, offset, full) => {
+  cleaned = cleaned.replace(/([ \t]+)(?=[\u0E00-\u0EFF])/g, (spaces, _g, offset, full) => {
     const prev = offset > 0 ? full[offset - 1] : "";
     // Keep normal spaces between words, collapse multiple spaces
-    if (/[\u0E00-\u0E7F]/.test(prev) && spaces.length > 1) {
+    if (/[\u0E00-\u0EFF]/.test(prev) && spaces.length > 1) {
       return " ";
     }
     return spaces;
   });
 
-  // If the remaining text has no Thai, Chinese, or Latin letters/digits (e.g. only "." or spaces), return ""
-  if (!/[\u0E00-\u0E7F\u3400-\u4DBF\u4E00-\u9FFFA-Za-z0-9]/.test(cleaned)) {
+  // If the remaining text has no Thai, Lao, Chinese, or Latin letters/digits (e.g. only "." or spaces), return ""
+  if (!/[\u0E00-\u0EFF\u3400-\u4DBF\u4E00-\u9FFFA-Za-z0-9]/.test(cleaned)) {
     return "";
   }
 
